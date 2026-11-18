@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import List
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -27,8 +28,8 @@ def build_presentation_pdf(output_path: Path = OUTPUT_PDF) -> Path:
         pagesize=A4,
         leftMargin=2 * cm,
         rightMargin=2 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
+        topMargin=1.8 * cm,
+        bottomMargin=1.8 * cm,
         title="Dossier de Presentación - Archivero",
         author="Abel Eiras",
     )
@@ -40,33 +41,69 @@ def build_presentation_pdf(output_path: Path = OUTPUT_PDF) -> Path:
         fontSize=20,
         leading=24,
         textColor=colors.HexColor("#0F766E"),
-        spaceAfter=6,
+        spaceAfter=4,
     )
     subtitle_style = ParagraphStyle(
         "DocSubtitle",
         parent=styles["Normal"],
-        fontSize=11,
-        leading=15,
+        fontSize=10.5,
+        leading=14.5,
         textColor=colors.HexColor("#475569"),
-        spaceAfter=14,
+        spaceAfter=12,
     )
     h2_style = ParagraphStyle(
         "SectionH2",
         parent=styles["Heading2"],
-        fontSize=13,
-        leading=17,
+        fontSize=12.5,
+        leading=16,
         textColor=colors.HexColor("#0F172A"),
-        spaceBefore=12,
-        spaceAfter=6,
+        spaceBefore=10,
+        spaceAfter=5,
     )
     body_style = ParagraphStyle(
         "Body",
         parent=styles["Normal"],
-        fontSize=9.5,
-        leading=13.5,
+        fontSize=9.2,
+        leading=13,
         textColor=colors.HexColor("#1E293B"),
-        spaceAfter=6,
+        spaceAfter=5,
     )
+    th_style = ParagraphStyle(
+        "TableHeader",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.white,
+    )
+    td_style = ParagraphStyle(
+        "TableCell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.4,
+        leading=11.5,
+        textColor=colors.HexColor("#1E293B"),
+    )
+    td_bold_style = ParagraphStyle(
+        "TableCellBold",
+        parent=td_style,
+        fontName="Helvetica-Bold",
+    )
+
+    def make_table_rows(raw_rows: List[List[str]], bold_cols: tuple[int, ...] = (0,)) -> List[List[Paragraph]]:
+        """Envuelve cada celda en un Paragraph para que ReportLab ajuste las líneas dentro del ancho de columna."""
+        wrapped: List[List[Paragraph]] = []
+        for r_idx, row in enumerate(raw_rows):
+            if r_idx == 0:
+                wrapped.append([Paragraph(cell, th_style) for cell in row])
+            else:
+                wrapped.append(
+                    [
+                        Paragraph(cell, td_bold_style if c_idx in bold_cols else td_style)
+                        for c_idx, cell in enumerate(row)
+                    ]
+                )
+        return wrapped
 
     story = []
 
@@ -90,31 +127,56 @@ def build_presentation_pdf(output_path: Path = OUTPUT_PDF) -> Path:
     )
 
     story.append(Paragraph("2. Flujo Automático en 5 Pasos", h2_style))
-    flow_data = [
+    flow_raw = [
         ["Paso", "Módulo", "Qué hace por la farmacia"],
-        ["1", "Vigilancia de Correo", "Revisa uno o varios buzones (IMAP, Gmail, Outlook) y descarga facturas nuevas sin borrar correos."],
-        ["2", "Lectura IA y Validación", "Extrae proveedor, NIF, fechas, Base, IVA, Recargo de Equivalencia e IRPF y verifica la suma."],
-        ["3", "Archivo para Gestoría", "Ordena los PDFs automáticamente en Año / Mes / Categoría / Proveedor con nombre estandarizado."],
-        ["4", "Conciliación Bancaria", "Cruza extractos Norma 43, CAMT.053 XML y Excel/CSV (incluyendo remesas agrupadas y abonos)."],
-        ["5", "Exportación a Excel", "Genera al instante el libro Excel (.xlsx) con 4 hojas contables listas para enviar a la gestoría."],
+        [
+            "1",
+            "Vigilancia de Correo",
+            "Revisa uno o varios buzones (IMAP, Gmail, Outlook) y descarga facturas nuevas sin borrar ni modificar tus correos.",
+        ],
+        [
+            "2",
+            "Lectura IA y Validación",
+            "Extrae proveedor, NIF, fechas, Base, IVA, Recargo de Equivalencia e IRPF y verifica que la suma cuadre con el Total.",
+        ],
+        [
+            "3",
+            "Archivo para Gestoría",
+            "Ordena los PDFs automáticamente en carpetas Año / Mes / Categoría / Proveedor con nombre limpio y estandarizado.",
+        ],
+        [
+            "4",
+            "Conciliación Bancaria",
+            "Cruza extractos Norma 43, CAMT.053 XML y Excel/CSV (incluyendo remesas agrupadas, plazos y abonos que restan).",
+        ],
+        [
+            "5",
+            "Exportación a Excel",
+            "Genera al instante el libro Excel (.xlsx) con 4 hojas contables listas para enviar a la gestoría.",
+        ],
     ]
-    t_flow = Table(flow_data, colWidths=[1.3 * cm, 4.2 * cm, 11.5 * cm])
+    # Ancho útil en A4 con márgenes de 2cm izq y 2cm der: 21 - 4 = 17 cm (1.3 + 4.0 + 11.7 = 17.0 cm)
+    t_flow = Table(
+        make_table_rows(flow_raw, bold_cols=(0, 1)),
+        colWidths=[1.3 * cm, 4.0 * cm, 11.7 * cm],
+        repeatRows=1,
+    )
     t_flow.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F766E")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("PADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
             ]
         )
     )
     story.append(t_flow)
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 4))
 
     story.append(Paragraph("3. Los 6 Principios de Seguridad y Robustez", h2_style))
     principles = [
@@ -134,31 +196,36 @@ def build_presentation_pdf(output_path: Path = OUTPUT_PDF) -> Path:
             body_style,
         )
     )
-    ai_data = [
-        ["Proveedor", "Coste para la farmacia", "Privacidad", "Facturas escaneadas"],
+    ai_raw = [
+        ["Proveedor", "Coste para la farmacia", "Privacidad de los datos", "Facturas escaneadas"],
         ["Google AI Studio (Gratis)", "0,00 € (hasta 1.500/día)", "Estándar gratuita de Google", "Sí (Visión directa PDF)"],
         ["Google AI Studio (Con facturación)", "~0,02 € cada 100 facturas", "100% Privado por contrato", "Sí (Visión directa PDF)"],
         ["OpenAI API (gpt-4o-mini)", "~0,03 € cada 100 facturas", "100% Privado por contrato", "Sí (Texto / OCR)"],
         ["Anthropic Claude API", "~0,05 € cada 100 facturas", "100% Privado por contrato", "Sí (Lectura nativa PDF)"],
         ["Modo Básico sin Internet / Ollama", "0,00 € (Gratis)", "100% en el propio ordenador", "PDFs digitales / Local"],
     ]
-    t_ai = Table(ai_data, colWidths=[4.8 * cm, 3.8 * cm, 4.4 * cm, 4.0 * cm])
+    # 4.8 + 3.8 + 4.4 + 4.0 = 17.0 cm
+    t_ai = Table(
+        make_table_rows(ai_raw, bold_cols=(0,)),
+        colWidths=[4.8 * cm, 3.8 * cm, 4.4 * cm, 4.0 * cm],
+        repeatRows=1,
+    )
     t_ai.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8.2),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("PADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
             ]
         )
     )
     story.append(t_ai)
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 4))
 
     story.append(Paragraph("5. Pantallas Principales de la Aplicación", h2_style))
     screens = [
