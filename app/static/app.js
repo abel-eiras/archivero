@@ -866,6 +866,37 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("cfg-umbral-val").textContent = Math.round(parseFloat(e.target.value) * 100) + "%";
   });
 
+  document.getElementById("cfg-proveedor-modelo").addEventListener("change", (e) => {
+    const prov = e.target.value;
+    const modelInput = document.getElementById("cfg-modelo-llm");
+    if (prov === "google_ai_studio") modelInput.value = "gemini-2.0-flash";
+    else if (prov === "openai_compatible") modelInput.value = "gpt-4o-mini";
+    else if (prov === "anthropic") modelInput.value = "claude-3-5-haiku-latest";
+  });
+
+  document.getElementById("btn-test-llm-key").addEventListener("click", async () => {
+    const resBox = document.getElementById("cfg-test-result");
+    resBox.style.color = "var(--text-muted)";
+    resBox.textContent = "Probando conexión con el lector de facturas...";
+    try {
+      const res = await apiFetch("/api/settings/test-llm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proveedor_modelo: document.getElementById("cfg-proveedor-modelo").value,
+          modelo_llm: document.getElementById("cfg-modelo-llm").value,
+          llm_api_key: document.getElementById("cfg-llm-api-key").value.trim(),
+        }),
+      });
+      resBox.style.color = res.ok ? "var(--success)" : "var(--danger)";
+      resBox.textContent = res.mensaje;
+      if (res.ok) loadConfiguration();
+    } catch (err) {
+      resBox.style.color = "var(--danger)";
+      resBox.textContent = "Error al probar la clave: " + err.message;
+    }
+  });
+
   document.getElementById("form-general-settings").addEventListener("submit", async (e) => {
     e.preventDefault();
     const payload = {

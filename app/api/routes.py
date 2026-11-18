@@ -537,6 +537,78 @@ def update_settings_endpoint(
     return updated
 
 
+@router.post("/settings/test-llm")
+def test_llm_connection_endpoint(
+    payload: Dict[str, Any],
+    db: Database = Depends(get_db),
+    creds: CredentialManager = Depends(get_credentials),
+) -> Dict[str, Any]:
+    """
+    Comprueba en vivo si la clave o proveedor seleccionado responde correctamente
+    procesando una factura mínima de prueba.
+    """
+    from app.services.llm_processor import LLMProcessor
+    from app.services.pdf_extractor import PDFContent
+
+    provider = payload.get("proveedor_modelo") or db.get_setting("proveedor_modelo") or "google_ai_studio"
+    typed_key = (payload.get("llm_api_key") or "").strip()
+    effective_key = typed_key or creds.get_llm_api_key(provider) or ""
+    model = payload.get("modelo_llm") or db.get_setting("modelo_llm") or ""
+    endpoint_url = payload.get("llm_endpoint_url") or db.get_setting("llm_endpoint_url") or None
+
+    if provider == "heuristico_local":
+        return {
+            "ok": True,
+            "mensaje": "Modo básico sin Internet activo. Funciona directamente en tu ordenador sin necesitar clave.",
+        }
+
+    if not effective_key and provider in ("google_ai_studio", "openai_compatible", "anthropic"):
+        if not (provider == "openai_compatible" and endpoint_url and "11434" in endpoint_url):
+            return {
+                "ok": False,
+                "mensaje": "Falta pegar la clave de acceso (API Key) o guardarla antes de hacer la prueba.",
+            }
+
+    sample_pdf = PDFContent(
+        pdf_bytes=b"%PDF-1.4 test",
+        hash_sha256="0" * 64,
+        text=(
+            "Proveedor: Distribuidora de Prueba S.L.\n"
+            "NIF: B12345678\n"
+            "Factura Nº: TEST-001\n"
+            "Fecha de emisión: 2026-11-01\n"
+            "Base Imponible: 100,00 EUR\n"
+            "IVA 21%: 21,00 EUR\n"
+            "Total Factura: 121,00 EUR"
+        ),
+        page_count=1,
+        has_text_layer=True,
+        extraction_method="texto_nativo",
+        filename="prueba_conexion.pdf",
+    )
+
+    proc = LLMProcessor(
+        provider_type=provider,
+        api_key=effective_key,
+        model=model,
+        endpoint_url=endpoint_url,
+    )
+    try:
+        prov_instance = proc._build_provider()
+        ext = prov_instance.extract_invoice(sample_pdf)
+        if typed_key:
+            creds.set_llm_api_key(provider, typed_key)
+        return {
+            "ok": True,
+            "mensaje": f"¡Conexión verificada con éxito! El lector ({prov_instance.provider_name}) leyó correctamente la factura de prueba ({ext.total:.2f} €).",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "mensaje": f"No se pudo conectar con el proveedor ({provider}). Revisa que la clave esté bien copiada: {exc}",
+        }
+
+
 @router.post("/database/backup")
 def create_manual_db_backup(db: Database = Depends(get_db)) -> Dict[str, Any]:
     backup_path = db.create_backup(reason="manual_ui")

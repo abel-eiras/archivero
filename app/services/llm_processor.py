@@ -202,6 +202,78 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         return InvoiceExtraction(**parsed)
 
 
+class AnthropicProvider(BaseLLMProvider):
+    """Proveedor oficial de Anthropic (Claude API) con soporte nativo para PDFs y texto."""
+
+    provider_name = "anthropic"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-3-5-haiku-latest",
+        endpoint_url: str = "https://api.anthropic.com/v1",
+        timeout: float = 45.0,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.endpoint_url = endpoint_url.rstrip("/")
+        self.timeout = timeout
+
+    def extract_invoice(
+        self,
+        pdf_content: PDFContent,
+        categories: Optional[List[Dict[str, str]]] = None,
+    ) -> InvoiceExtraction:
+        prompt = build_extraction_prompt(categories)
+        url = f"{self.endpoint_url}/messages"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+
+        content_blocks: List[Dict[str, Any]] = []
+        if pdf_content.has_text_layer and pdf_content.text.strip():
+            content_blocks.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Nombre del archivo: {pdf_content.filename}\n\n"
+                        f"Texto extraído del PDF:\n{pdf_content.text}"
+                    ),
+                }
+            )
+        else:
+            content_blocks.append(
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_content.base64_pdf,
+                    },
+                }
+            )
+        content_blocks.append({"type": "text", "text": prompt})
+
+        payload = {
+            "model": self.model,
+            "max_tokens": 1024,
+            "temperature": 0.1,
+            "messages": [{"role": "user", "content": content_blocks}],
+        }
+
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        blocks = data.get("content") or []
+        raw_text = blocks[0].get("text", "{}") if blocks else "{}"
+        parsed = _parse_json_from_llm_output(raw_text)
+        return InvoiceExtraction(**parsed)
+
+
 class HeuristicInvoiceExtractor(BaseLLMProvider):
     """
     Extractor determinista y heurístico local para facturas españolas.
@@ -445,6 +517,12 @@ class LLMProcessor:
                 api_key=self.api_key,
                 model=self.model or "gpt-4o-mini",
                 endpoint_url=self.endpoint_url or "https://api.openai.com/v1",
+            )
+        if self.provider_type == "anthropic":
+            return AnthropicProvider(
+                api_key=self.api_key,
+                model=self.model or "claude-3-5-haiku-latest",
+                endpoint_url=self.endpoint_url or "https://api.anthropic.com/v1",
             )
         return GoogleAIStudioProvider(
             api_key=self.api_key,

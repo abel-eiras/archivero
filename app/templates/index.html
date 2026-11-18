@@ -433,20 +433,61 @@
             </div>
             <form id="form-general-settings">
               <div class="form-group" style="margin-bottom:0.9rem;">
-                <label>¿Cómo quieres que el programa lea los datos de cada factura?</label>
+                <label>¿Qué servicio quieres usar para leer las facturas?</label>
                 <select id="cfg-proveedor-modelo">
-                  <option value="google_ai_studio">Lectura inteligente de Google (Recomendado: lee hasta facturas escaneadas)</option>
-                  <option value="openai_compatible">Otro sistema de Inteligencia Artificial (OpenAI / sistema propio)</option>
-                  <option value="heuristico_local">Modo básico sin Internet (solo para facturas digitales con texto claro)</option>
+                  <option value="google_ai_studio">Google Gemini (Google AI Studio - Gratis o pago por uso de céntimos)</option>
+                  <option value="openai_compatible">OpenAI (ChatGPT API) o IA local con Ollama</option>
+                  <option value="anthropic">Anthropic (Claude API - Lectura avanzada de PDFs)</option>
+                  <option value="heuristico_local">Modo básico sin Internet (no necesita clave ni envía datos fuera)</option>
                 </select>
-                <span class="field-hint">La opción recomendada de Google extrae automáticamente proveedor, NIF, fechas, base, IVA y recargo de equivalencia.</span>
+                <span class="field-hint">Puedes cambiar de proveedor cuando quieras. Todos leen proveedor, NIF, fechas, Base, IVA, Recargo de Equivalencia e IRPF.</span>
               </div>
 
               <div class="form-group" style="margin-bottom:0.9rem;">
-                <label>Clave personal de lectura de Google (solo hay que ponerla la primera vez)</label>
-                <input type="password" id="cfg-llm-api-key" placeholder="Pega aquí tu clave si quieres cambiarla o configurarla" />
+                <label>Clave de conexión (API Key) del proveedor elegido</label>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                  <input type="password" id="cfg-llm-api-key" placeholder="Pega aquí tu clave (ej. AIza... o sk-...)" style="flex:1;" />
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-test-llm-key">Probar Clave</button>
+                </div>
                 <span id="cfg-key-status" class="field-hint"></span>
+                <div id="cfg-test-result" style="font-size:0.82rem; margin-top:0.25rem; font-weight:600;"></div>
               </div>
+
+              <details class="faq-item" style="margin-bottom:0.95rem; background:#f8fafc;">
+                <summary style="color:var(--primary);">
+                  ¿Cómo consigo mi clave paso a paso? ¿Vale mi suscripción de ChatGPT Plus / Claude / Gemini?
+                </summary>
+                <div style="margin-top:0.65rem; font-size:0.84rem; color:#334155; display:flex; flex-direction:column; gap:0.65rem;">
+                  <div>
+                    <strong>¿Por qué se usa una Clave (API Key) y no la suscripción mensual de 20 €/mes?</strong><br/>
+                    Las suscripciones mensuales como <em>ChatGPT Plus</em>, <em>Claude Pro</em> o <em>Gemini Advanced</em> solo permiten chatear a mano dentro de su página web; los fabricantes bloquean su uso desde programas externos. En cambio, ofrecen las <strong>Claves API</strong>, que para una farmacia son <strong>mucho más ventajosas</strong>: en Google es gratuita (o cuesta apenas <strong>2 céntimos por cada 100 facturas</strong> en modo privado) sin pagar ninguna cuota fija mensual.
+                  </div>
+                  <div>
+                    <strong>Opción 1: Google AI Studio (Gemini) — Gratis o Privado por céntimos:</strong>
+                    <ol style="padding-left:1.2rem; margin-top:0.2rem;">
+                      <li>Entra con cualquier cuenta de Google en <strong>aistudio.google.com/apikey</strong>.</li>
+                      <li>Pulsa el botón azul <strong>"Create API key"</strong> (Crear clave de API).</li>
+                      <li>Copia el código que empieza por <code>AIza...</code> y pégalo arriba.</li>
+                      <li><em>Nota de privacidad:</em> El plan gratuito cuesta 0 €, pero Google avisa de que puede usar los textos para mejorar sus modelos. Si vinculas una tarjeta en Google AI Studio (plan <em>Pay-as-you-go</em>), <strong>Google garantiza por contrato que tus facturas son 100% privadas</strong> y leer 500 facturas te costará menos de 0,10 €.</li>
+                    </ol>
+                  </div>
+                  <div>
+                    <strong>Opción 2: OpenAI (creadores de ChatGPT):</strong>
+                    <ol style="padding-left:1.2rem; margin-top:0.2rem;">
+                      <li>Entra en <strong>platform.openai.com/api-keys</strong> e inicia sesión.</li>
+                      <li>En <em>Settings → Billing</em> carga un saldo mínimo de 5 € (en una farmacia dura más de un año).</li>
+                      <li>Pulsa <strong>"Create new secret key"</strong>, copia la clave que empieza por <code>sk-...</code> y pégala arriba. Sus datos por API son siempre privados por defecto.</li>
+                    </ol>
+                  </div>
+                  <div>
+                    <strong>Opción 3: Anthropic (creadores de Claude):</strong>
+                    <ol style="padding-left:1.2rem; margin-top:0.2rem;">
+                      <li>Entra en <strong>console.anthropic.com/settings/keys</strong>.</li>
+                      <li>Pulsa <strong>"Create Key"</strong>, copia la clave que empieza por <code>sk-ant-...</code> y pégala arriba. También garantiza privacidad empresarial por defecto.</li>
+                    </ol>
+                  </div>
+                </div>
+              </details>
 
               <div class="form-group" style="margin-bottom:0.9rem;">
                 <label>¿Qué hacer cuando una factura viene escaneada como una foto?</label>
@@ -681,28 +722,46 @@
         <div class="grid-2">
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Guía rápida de configuración inicial (una sola vez)</h2>
+              <h2 class="card-title">Todo sobre las Claves de Inteligencia Artificial (Google, OpenAI y Claude)</h2>
             </div>
+
+            <div class="alert alert-info" style="margin-bottom:0.9rem;">
+              <strong>Pregunta habitual: ¿Puedo meter mi usuario y contraseña de ChatGPT Plus, Claude Pro o Gemini Advanced (los de 20 €/mes)?</strong><br/>
+              No directamente. Google, OpenAI y Anthropic separan sus <em>suscripciones de chat web</em> de la conexión para programas informáticos (llamada <strong>API Key</strong>). Si un programa intentase usar tu sesión web normal, bloquearían tu cuenta por seguridad. La buena noticia es que las <strong>Claves API no tienen cuota mensual</strong>: solo pagas por las facturas que leas (o nada en el plan gratuito de Google).
+            </div>
+
             <div class="help-step">
-              <div class="help-step-num">A</div>
+              <div class="help-step-num">1</div>
               <div class="help-step-body">
-                <h3>Cómo conseguir la clave gratuita de lectura de Google</h3>
+                <h3>Google AI Studio (Gemini) — El más fácil y económico</h3>
                 <ol>
-                  <li>Entra con tu cuenta de Google en la página oficial <strong>aistudio.google.com</strong>.</li>
-                  <li>Pulsa en el botón <strong>"Get API key"</strong> (Obtener clave) y luego en <strong>"Create API key"</strong>.</li>
-                  <li>Copia el código que aparece en pantalla.</li>
-                  <li>Ven a la pestaña <strong>Configuración Fácil</strong> de este programa, pégalo en la casilla <em>"Clave personal de lectura de Google"</em> y pulsa <strong>Guardar Opciones</strong>.</li>
+                  <li>Abre en tu navegador <strong>aistudio.google.com/apikey</strong> e inicia sesión con tu cuenta de Google/Gmail.</li>
+                  <li>Haz clic en el botón azul <strong>"Create API key"</strong> y copia la clave que empieza por <code>AIza...</code>.</li>
+                  <li>Pégala en <strong>Configuración Fácil</strong> y pulsa <strong>Probar Clave</strong> y <strong>Guardar Opciones</strong>.</li>
+                  <li><strong>¿Gratis o de pago?</strong> Sin poner tarjeta es <strong>100% gratis</strong> (hasta 1.500 facturas al día), pero Google puede usar los documentos para entrenar sus modelos. Si activas la facturación en Google AI Studio, pasas al modo privado profesional (tus datos nunca se usan para entrenar) y leer 100 facturas cuesta unos <strong>0,02 €</strong>.</li>
                 </ol>
               </div>
             </div>
 
             <div class="help-step">
-              <div class="help-step-num">B</div>
+              <div class="help-step-num">2</div>
               <div class="help-step-body">
-                <h3>Cómo conectar el correo de la farmacia</h3>
+                <h3>OpenAI (ChatGPT API) y Anthropic (Claude API)</h3>
                 <ul>
-                  <li><strong>Si usas Gmail o Outlook:</strong> elige <em>Cuenta de Gmail</em> o <em>Cuenta de Outlook</em> en el selector o utiliza una contraseña de aplicación de 16 letras generada en la seguridad de tu cuenta.</li>
-                  <li><strong>Si usas correo del Colegio de Farmacéuticos o dominio propio:</strong> elige la primera opción, escribe tu correo, tu contraseña y el servidor entrante (por ejemplo <code>imap.tuservidor.es</code>, puerto <code>993</code>).</li>
+                  <li><strong>OpenAI:</strong> Entra en <strong>platform.openai.com/api-keys</strong>, recarga el mínimo de 5 € en <em>Billing</em> (dura meses o años en una farmacia) y crea una clave (<code>sk-...</code>). Elige <em>OpenAI</em> en Configuración Fácil.</li>
+                  <li><strong>Anthropic (Claude):</strong> Entra en <strong>console.anthropic.com/settings/keys</strong>, carga 5 € de saldo y crea una clave (<code>sk-ant-...</code>). Elige <em>Anthropic (Claude API)</em> en Configuración Fácil.</li>
+                  <li><strong>Privacidad:</strong> Tanto OpenAI como Anthropic garantizan por contrato que los datos enviados mediante API Key son 100% confidenciales y nunca entrenan sus modelos.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="help-step">
+              <div class="help-step-num">3</div>
+              <div class="help-step-body">
+                <h3>Conectar el correo electrónico de la farmacia</h3>
+                <ul>
+                  <li><strong>Correo del Colegio de Farmacéuticos o dominio propio:</strong> elige la primera opción en el apartado de Correo, escribe tu dirección, tu contraseña y el servidor entrante (ej. <code>imap.tuservidor.es</code>, puerto <code>993</code>).</li>
+                  <li><strong>Gmail o Outlook:</strong> elige <em>Cuenta de Gmail</em> o <em>Cuenta de Outlook</em> y pon tu contraseña de aplicación (de 16 letras) o autorización.</li>
                 </ul>
               </div>
             </div>
