@@ -577,7 +577,7 @@ def check_updates_endpoint(
     db: Database = Depends(get_db),
     creds: CredentialManager = Depends(get_credentials),
 ) -> Dict[str, Any]:
-    repo = db.get_setting("github_repo", "abeleiras/farmafacturas")
+    repo = db.get_setting("github_repo", "abel-eiras/archivero")
     token = creds.get_github_token()
     updater = UpdaterService(github_repo=repo, github_token=token)
     return updater.check_for_updates()

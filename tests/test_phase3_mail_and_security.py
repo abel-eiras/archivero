@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
 from app.db.database import Database
 from app.services.credentials import CredentialManager
@@ -93,26 +93,26 @@ def test_mail_poller_processes_new_messages_once_and_applies_sender_rules(tmp_pa
             "email": "admin@farmacia.es",
             "tipo_conexion": "imap",
             "servidor_imap": "imap.farmacia.es",
-            "remitentes_permitidos": ["cofares.es"],
+            "remitentes_permitidos": ["distribuidoranorte.es"],
         }
     )
 
-    # Regla por remitente: todo lo que venga de iberdrola.es es categoría 'suministros'
+    # Regla por remitente: todo lo que venga de energiapeninsular.es es categoría 'suministros'
     db.create_rule(
         tipo_regla="remitente_categoria",
-        patron="iberdrola.es",
-        proveedor_nombre="Iberdrola Clientes S.A.U.",
+        patron="energiapeninsular.es",
+        proveedor_nombre="Comercializadora Electrica Peninsular S.A.",
         categoria="suministros",
         tipo_documento="factura_servicios",
     )
 
-    spec_cofares = get_sample_invoices_specs()[0]
+    spec_dist = get_sample_invoices_specs()[0]
     raw_msg_1 = _build_rfc822_email_with_pdf(
-        message_id="<msg-001@cofares.es>",
-        sender="Facturación Cofares <facturacion@cofares.es>",
-        subject="Factura mensual Cofares",
-        pdf_bytes=build_invoice_pdf_bytes(spec_cofares["lines"]),
-        pdf_filename="cofares_nov.pdf",
+        message_id="<msg-001@distribuidoranorte.es>",
+        sender="Facturación Distribuidora <facturacion@distribuidoranorte.es>",
+        subject="Factura mensual Distribuidora Norte",
+        pdf_bytes=build_invoice_pdf_bytes(spec_dist["lines"]),
+        pdf_filename="dist_norte_nov.pdf",
     )
     env_1 = parse_raw_email_message(raw_msg_1, uid="101")
 
@@ -129,8 +129,8 @@ def test_mail_poller_processes_new_messages_once_and_applies_sender_rules(tmp_pa
     assert res1[0]["mensajes_nuevos"] == 1
     assert res1[0]["facturas_insertadas"] == 1
 
-    # Segunda sincronización con el mismo buzón: NO reprocesa el mensaje (<msg-001@cofares.es>)
+    # Segunda sincronización con el mismo buzón: NO reprocesa el mensaje (<msg-001@distribuidoranorte.es>)
     res2 = poller.sync_all_active_accounts()
     assert res2[0]["mensajes_nuevos"] == 0
     assert res2[0]["facturas_insertadas"] == 0
-    assert db.is_message_processed(acc_id, "<msg-001@cofares.es>") is True
+    assert db.is_message_processed(acc_id, "<msg-001@distribuidoranorte.es>") is True

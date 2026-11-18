@@ -32,7 +32,7 @@ def test_bank_reconciliation_norma43_camt053_csv_and_grouped_payments(tmp_path: 
     db.set_settings({"carpeta_salida": str(tmp_path / "archivo")})
     pipeline = InvoiceIngestionPipeline(db=db)
 
-    # Ingerir todas las facturas de muestra (Cofares, Bidafarma factura + abono, Iberdrola, Alquiler, Asesoría)
+    # Ingerir todas las facturas de muestra (Distribuidora Norte, Cooperativa Sur factura + abono, Eléctrica, Alquiler, Asesoría)
     for spec in get_sample_invoices_specs():
         pipeline.ingest_pdf(
             pdf_source=build_invoice_pdf_bytes(spec["lines"]),
@@ -42,12 +42,12 @@ def test_bank_reconciliation_norma43_camt053_csv_and_grouped_payments(tmp_path: 
 
     reconciler = BankReconciliationService(db=db)
 
-    # 1. Importar Norma 43 (3 movimientos: Cofares -1254.00, Bidafarma agrupado -783.75, Iberdrola -254.10)
+    # 1. Importar Norma 43 (3 movimientos: Distribuidora Norte -1254.00, Cooperativa Sur agrupado -783.75, Eléctrica -254.10)
     res_n43 = reconciler.import_statement(
         content=build_sample_norma43_statement(),
         filename="extracto.n43",
         formato="norma43",
-        banco="CaixaBank",
+        banco="Banco Principal",
         auto_reconcile=True,
     )
     assert res_n43["nuevos_insertados"] == 3
@@ -59,23 +59,23 @@ def test_bank_reconciliation_norma43_camt053_csv_and_grouped_payments(tmp_path: 
         content=build_sample_norma43_statement(),
         filename="extracto.n43",
         formato="norma43",
-        banco="CaixaBank",
+        banco="Banco Principal",
         auto_reconcile=False,
     )
     assert res_n43_dup["nuevos_insertados"] == 0
     assert res_n43_dup["duplicados_omitidos"] == 3
 
-    # Verificar que tanto la factura de Bidafarma (888.25) como su abono (-104.50) quedaron 'pagada'
-    bidafarma_invs = db.list_invoices(proveedor="Bidafarma")
-    assert len(bidafarma_invs) == 2
-    assert all(i["estado_pago"] == "pagada" for i in bidafarma_invs)
+    # Verificar que tanto la factura de Cooperativa del Sur (888.25) como su abono (-104.50) quedaron 'pagada'
+    coop_invs = db.list_invoices(proveedor="Cooperativa")
+    assert len(coop_invs) == 2
+    assert all(i["estado_pago"] == "pagada" for i in coop_invs)
 
     # 2. Importar CAMT.053 XML (Alquiler -1530.00 €)
     res_camt = reconciler.import_statement(
         content=build_sample_camt053_xml(),
         filename="extracto.xml",
         formato="camt053",
-        banco="CaixaBank",
+        banco="Banco Principal",
         auto_reconcile=True,
     )
     assert res_camt["nuevos_insertados"] == 1
@@ -86,7 +86,7 @@ def test_bank_reconciliation_norma43_camt053_csv_and_grouped_payments(tmp_path: 
         content=build_sample_csv_statement(),
         filename="extracto.csv",
         formato="csv",
-        banco="BBVA",
+        banco="Cuenta Secundaria",
         auto_reconcile=False,
     )
     assert res_csv["nuevos_insertados"] == 1

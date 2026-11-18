@@ -71,7 +71,7 @@ DEFAULT_SETTINGS = {
     "umbral_confianza": 0.85,
     "intervalo_correo_minutos": 15,
     "poller_activo": True,
-    "github_repo": "abeleiras/farmafacturas",
+    "github_repo": "abel-eiras/archivero",
     "github_repo_privado": False,
     "categorias": CATEGORIAS_INICIALES,
     "remitentes_globales": [],

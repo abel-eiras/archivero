@@ -8,7 +8,6 @@ y extractos bancarios en Norma 43, CAMT.053 (XML) y CSV.
 from __future__ import annotations
 
 import io
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from reportlab.lib.pagesizes import A4
@@ -41,15 +40,15 @@ def get_sample_invoices_specs() -> List[Dict[str, Any]]:
     """Devuelve las especificaciones de las facturas PDF de muestra para Fase 0."""
     return [
         {
-            "filename": "factura_cofares_2026_11.pdf",
-            "sender": "facturacion@cofares.es",
+            "filename": "factura_distribuidora_norte_2026_11.pdf",
+            "sender": "facturacion@distribuidoranorte.es",
             "lines": [
-                "Proveedor: Cofares Sociedad Cooperativa Farmaceutica",
+                "Proveedor: Distribuidora Farmaceutica Norte S.Coop.",
                 "NIF: F28012345",
                 "Factura Nº: FRA-2026-1001",
                 "Fecha de emisión: 2026-11-02",
                 "Fecha de vencimiento: 2026-11-15",
-                "Cliente: Farmacia Central Lic. Eiras",
+                "Cliente: Farmacia Central",
                 "Concepto: Suministro de medicamentos y especialidades farmacéuticas",
                 "Base Imponible: 1200,00 EUR",
                 "IVA 4%: 48,00 EUR",
@@ -59,10 +58,10 @@ def get_sample_invoices_specs() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "filename": "factura_bidafarma_2026_11.pdf",
-            "sender": "facturas@bidafarma.es",
+            "filename": "factura_cooperativa_sur_2026_11.pdf",
+            "sender": "facturas@cooperativasur.es",
             "lines": [
-                "Proveedor: Bidafarma S.Coop. Andaluza",
+                "Proveedor: Cooperativa Farmaceutica del Sur S.Coop.",
                 "NIF: F41987654",
                 "Factura Nº: FRA-2026-1002",
                 "Fecha de emisión: 2026-11-05",
@@ -76,10 +75,10 @@ def get_sample_invoices_specs() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "filename": "abono_bidafarma_2026_11.pdf",
-            "sender": "facturas@bidafarma.es",
+            "filename": "abono_cooperativa_sur_2026_11.pdf",
+            "sender": "facturas@cooperativasur.es",
             "lines": [
-                "Proveedor: Bidafarma S.Coop. Andaluza",
+                "Proveedor: Cooperativa Farmaceutica del Sur S.Coop.",
                 "NIF: F41987654",
                 "Abono Nº: AB-2026-0045",
                 "Factura rectificativa por devolución de mercancía",
@@ -93,10 +92,10 @@ def get_sample_invoices_specs() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "filename": "factura_iberdrola_2026_11.pdf",
-            "sender": "clientes@iberdrola.es",
+            "filename": "factura_electricidad_2026_11.pdf",
+            "sender": "clientes@energiapeninsular.es",
             "lines": [
-                "Proveedor: Iberdrola Clientes S.A.U.",
+                "Proveedor: Comercializadora Electrica Peninsular S.A.",
                 "NIF: A95758389",
                 "Factura Nº: FRA-2026-2050",
                 "Fecha de emisión: 2026-11-10",
@@ -142,8 +141,8 @@ def get_sample_invoices_specs() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "filename": "factura_dudosa_farmapack.pdf",
-            "sender": "ventas@farmapack.es",
+            "filename": "factura_dudosa_embalajes.pdf",
+            "sender": "ventas@embalajesfarma.es",
             "lines": [
                 "Proveedor: Bolsas y Etiquetas FarmaPack S.L.",
                 "NIF: B12345678",
@@ -162,22 +161,22 @@ def get_sample_invoices_specs() -> List[Dict[str, Any]]:
 def build_sample_norma43_statement() -> str:
     """
     Construye un fichero Norma 43 válido de muestra con:
-    1. Pago a Cofares: -1254,00 € (FRA-2026-1001)
-    2. Pago agrupado a Bidafarma: -783,75 € (cubre FRA-2026-1002 de 888,25 € + Abono AB-2026-0045 de -104,50 €)
-    3. Pago a Iberdrola: -254,10 € (FRA-2026-2050)
+    1. Pago a Distribuidora Farmacéutica Norte: -1254,00 € (FRA-2026-1001)
+    2. Pago agrupado a Cooperativa del Sur: -783,75 € (cubre FRA-2026-1002 de 888,25 € + Abono AB-2026-0045 de -104,50 €)
+    3. Pago a Comercializadora Eléctrica: -254,10 € (FRA-2026-2050)
     """
     lines = [
         # Registro 11: Cabecera de cuenta
         "112100041812345678902611012611302000001500000009783FARMACIA CENTRAL             ",
-        # Movimiento 1: Cofares -1254.00 EUR el 2026-11-15
-        "22    0418261115261115030001000000001254000000001001FRA-2026-1001   COFARES S.C.",
-        "2301RECIBO DOMICILIADO COFARES SOCIEDAD C   FACTURA FRA-2026-1001               ",
-        # Movimiento 2: Pago agrupado Bidafarma -783.75 EUR (888.25 - 104.50) el 2026-11-20
-        "22    0418261120261120030001000000000783750000001002REMESA          BIDAFARMA   ",
-        "2301ADEUDO SEPA BIDAFARMA S.COOP.           LIQUIDACION FACTURA Y ABONO         ",
-        # Movimiento 3: Iberdrola -254.10 EUR el 2026-11-18
-        "22    0418261118261118030001000000000254100000002050FRA-2026-2050   IBERDROLA   ",
-        "2301RECIBO IBERDROLA CLIENTES S.A.U.        SUMINISTRO ELECTRICO                ",
+        # Movimiento 1: Distribuidora Norte -1254.00 EUR el 2026-11-15
+        "22    0418261115261115030001000000001254000000001001FRA-2026-1001   DIST. NORTE ",
+        "2301RECIBO DOMICILIADO DISTRIBUIDORA NORTE  FACTURA FRA-2026-1001               ",
+        # Movimiento 2: Pago agrupado Cooperativa del Sur -783.75 EUR (888.25 - 104.50) el 2026-11-20
+        "22    0418261120261120030001000000000783750000001002REMESA          COOP. SUR   ",
+        "2301ADEUDO SEPA COOPERATIVA FARMACEUTICA    LIQUIDACION FACTURA Y ABONO         ",
+        # Movimiento 3: Comercializadora Eléctrica -254.10 EUR el 2026-11-18
+        "22    0418261118261118030001000000000254100000002050FRA-2026-2050   ELECTRICA   ",
+        "2301RECIBO COMERCIALIZADORA ELECTRICA       SUMINISTRO ELECTRICO                ",
         # Registro 33 y 88: Cierre
         "33210004181234567890000030000002291850000000000000000002000012708150978         ",
         "88999999999999999999000008                                                      ",
@@ -194,7 +193,7 @@ def build_sample_camt053_xml() -> str:
       <Id>STMT-2026-11</Id>
       <Acct>
         <Id><IBAN>ES9121000418450200051332</IBAN></Id>
-        <Svcr><FinInstnId><Nm>CaixaBank Farmacia</Nm></FinInstnId></Svcr>
+        <Svcr><FinInstnId><Nm>Banco Principal Farmacia</Nm></FinInstnId></Svcr>
       </Acct>
       <Ntry>
         <Amt Ccy="EUR">1530.00</Amt>
@@ -246,21 +245,21 @@ def generate_and_ingest_sample_dataset(
         content=build_sample_norma43_statement(),
         filename="extracto_noviembre.n43",
         formato="norma43",
-        banco="CaixaBank Farmacia",
+        banco="Banco Principal Farmacia",
         auto_reconcile=True,
     )
     r_camt = reconciler.import_statement(
         content=build_sample_camt053_xml(),
         filename="extracto_camt053.xml",
         formato="camt053",
-        banco="CaixaBank Farmacia",
+        banco="Banco Principal Farmacia",
         auto_reconcile=True,
     )
     r_csv = reconciler.import_statement(
         content=build_sample_csv_statement(),
         filename="extracto_asesoria.csv",
         formato="csv",
-        banco="BBVA Farmacia",
+        banco="Cuenta Secundaria Farmacia",
         auto_reconcile=True,
     )
 

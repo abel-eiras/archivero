@@ -13,14 +13,14 @@
       <div class="brand-cross">+</div>
       <div>
         <div class="brand-title">{{ app_name }}</div>
-        <div class="brand-subtitle">Control Contable de Farmacia</div>
+        <div class="brand-subtitle">Control de Facturas de Farmacia</div>
       </div>
     </div>
 
     <ul class="nav-menu">
       <li>
         <button class="nav-btn active" data-tab="tab-dashboard">
-          <span>Panel Principal</span>
+          <span>Resumen General</span>
         </button>
       </li>
       <li>
@@ -31,25 +31,30 @@
       </li>
       <li>
         <button class="nav-btn" data-tab="tab-facturas">
-          <span>Listado de Facturas</span>
+          <span>Todas las Facturas</span>
         </button>
       </li>
       <li>
         <button class="nav-btn" data-tab="tab-conciliacion">
-          <span>Conciliación Bancaria</span>
+          <span>Cuadrar con el Banco</span>
           <span id="badge-propuestas-banco" class="nav-badge" style="display:none; background:#d97706;">0</span>
         </button>
       </li>
       <li>
         <button class="nav-btn" data-tab="tab-configuracion">
-          <span>Configuración</span>
+          <span>Configuración Fácil</span>
+        </button>
+      </li>
+      <li>
+        <button class="nav-btn" data-tab="tab-ayuda">
+          <span>Ayuda Paso a Paso</span>
         </button>
       </li>
     </ul>
 
     <div class="sidebar-footer">
-      <div>Versión {{ app_version }} · Acceso solo Localhost</div>
-      <div style="margin-top:0.25rem;">Fuente única: SQLite local</div>
+      <div>Versión {{ app_version }} · Solo en este ordenador</div>
+      <div style="margin-top:0.25rem;">Tus datos no salen de tu farmacia</div>
     </div>
   </aside>
 
@@ -57,17 +62,21 @@
   <div class="main-wrapper">
     <header class="topbar">
       <div class="topbar-title">
-        <h1 id="current-screen-title">Panel Principal</h1>
+        <h1 id="current-screen-title">Resumen General</h1>
       </div>
       <div class="topbar-actions">
-        <label class="btn btn-primary" style="cursor:pointer;">
-          <span>+ Subir Facturas PDF</span>
+        <label class="btn btn-primary" style="cursor:pointer;" title="Selecciona una o varias facturas en PDF guardadas en tu ordenador">
+          <span>+ Añadir Facturas en PDF</span>
           <input type="file" id="quick-upload-input" accept="application/pdf,.pdf" multiple style="display:none;" />
         </label>
-        <button class="btn btn-secondary" id="btn-sync-mail">Sincronizar Correo</button>
-        <a href="/api/export/excel" class="btn btn-secondary" id="btn-export-excel">Exportar Excel Contable</a>
-        <button class="btn btn-secondary" id="btn-load-demo" title="Genera e ingiere facturas reales de muestra y extractos bancarios">
-          Cargar Muestra (Fase 0)
+        <button class="btn btn-secondary" id="btn-sync-mail" title="Revisa ahora mismo si han llegado facturas nuevas por correo">
+          Revisar Correo Ahora
+        </button>
+        <a href="/api/export/excel" class="btn btn-secondary" id="btn-export-excel" title="Descarga un archivo Excel listo para enviar a tu gestoría">
+          Descargar Excel para Gestoría
+        </a>
+        <button class="btn btn-secondary" id="btn-load-demo" title="Carga facturas y movimientos de ejemplo para aprender a usar el programa">
+          Cargar Datos de Ejemplo
         </button>
       </div>
     </header>
@@ -81,22 +90,22 @@
           <div class="kpi-card">
             <div class="kpi-label">Gasto Total Registrado</div>
             <div class="kpi-value" id="kpi-gasto-total">0,00 €</div>
-            <div class="kpi-sub" id="kpi-base-iva">Base: 0,00 € · IVA: 0,00 €</div>
+            <div class="kpi-sub" id="kpi-base-iva">Base sin IVA: 0,00 € · IVA: 0,00 €</div>
           </div>
           <div class="kpi-card">
-            <div class="kpi-label">Facturas Procesadas</div>
+            <div class="kpi-label">Facturas Guardadas</div>
             <div class="kpi-value" id="kpi-total-facturas">0</div>
-            <div class="kpi-sub">Archivadas por Año / Mes / Categoría</div>
+            <div class="kpi-sub">Ordenadas por Año / Mes / Categoría</div>
           </div>
           <div class="kpi-card">
-            <div class="kpi-label">Bandeja de Revisión</div>
+            <div class="kpi-label">Por Revisar</div>
             <div class="kpi-value" id="kpi-pendientes-revision" style="color:var(--warning);">0</div>
-            <div class="kpi-sub">Pendientes de confirmar por el usuario</div>
+            <div class="kpi-sub">Facturas con algún dato dudoso</div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Pendiente de Pago</div>
             <div class="kpi-value" id="kpi-importe-impagado" style="color:var(--danger);">0,00 €</div>
-            <div class="kpi-sub" id="kpi-facturas-impagadas">0 facturas pendientes de conciliar</div>
+            <div class="kpi-sub" id="kpi-facturas-impagadas">0 facturas aún no cobradas en el banco</div>
           </div>
         </div>
 
@@ -110,7 +119,7 @@
 
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Gasto por Categoría</h2>
+              <h2 class="card-title">Gasto por Tipo de Compra</h2>
             </div>
             <div id="chart-por-categoria" class="bar-list"></div>
           </div>
@@ -126,13 +135,13 @@
         <div class="grid-2">
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Vencimientos Próximos (15 días o vencidas)</h2>
+              <h2 class="card-title">Próximos Vencimientos (próximos 15 días o vencidas)</h2>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Vencimiento</th>
+                    <th>Fecha límite</th>
                     <th>Proveedor</th>
                     <th>Nº Factura</th>
                     <th class="num">Total</th>
@@ -152,7 +161,7 @@
               <table>
                 <thead>
                   <tr>
-                    <th>Emisión</th>
+                    <th>Fecha factura</th>
                     <th>Proveedor</th>
                     <th>Nº Factura</th>
                     <th>Categoría</th>
@@ -171,12 +180,12 @@
       <!-- ========================================================= -->
       <section id="tab-revision" class="tab-panel">
         <div class="alert alert-info">
-          <strong>Principio de seguridad:</strong> Toda factura cuya confianza sea inferior al umbral configurado o presente avisos aritméticos pasa por esta bandeja hasta que la confirmes.
+          <strong>¿Para qué sirve esta pantalla?</strong> Cuando el programa lee una factura y ve que alguna suma no cuadra o que algún dato no se lee con total claridad, la deja aquí para que le eches un vistazo antes de darla por buena.
         </div>
 
         <div class="card">
           <div class="card-header">
-            <h2 class="card-title">Facturas Pendientes de Revisión</h2>
+            <h2 class="card-title">Facturas que necesitan tu confirmación</h2>
             <button class="btn btn-secondary btn-sm" id="btn-refresh-revision">Actualizar lista</button>
           </div>
           <div class="table-wrap">
@@ -191,7 +200,7 @@
                   <th class="num">Base</th>
                   <th class="num">IVA</th>
                   <th class="num">Total</th>
-                  <th>Confianza / Motivo</th>
+                  <th>¿Qué hay que revisar?</th>
                   <th>Acciones</th>
                 </tr>
               </thead>
@@ -208,11 +217,11 @@
         <div class="card">
           <div class="filters-bar">
             <div class="form-group" style="flex:1; min-width:200px;">
-              <label for="filter-busqueda">Buscar (Proveedor, NIF, Nº Factura)</label>
-              <input type="text" id="filter-busqueda" placeholder="Ej. Cofares, A28012345, F-2026..." />
+              <label for="filter-busqueda">Buscar por proveedor, NIF o número de factura</label>
+              <input type="text" id="filter-busqueda" placeholder="Ej. Distribuidora Norte, B12345678, FRA-2026..." />
             </div>
             <div class="form-group">
-              <label for="filter-mes">Mes (AAAA-MM)</label>
+              <label for="filter-mes">Mes (Año-Mes)</label>
               <input type="text" id="filter-mes" placeholder="2026-11" style="width:120px;" />
             </div>
             <div class="form-group">
@@ -222,31 +231,31 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="filter-estado-revision">Estado Revisión</label>
+              <label for="filter-estado-revision">¿Revisada?</label>
               <select id="filter-estado-revision">
-                <option value="">Todos</option>
-                <option value="confirmada">Confirmada</option>
-                <option value="pendiente_revision">Pendiente de revisión</option>
+                <option value="">Todas</option>
+                <option value="confirmada">Confirmadas</option>
+                <option value="pendiente_revision">Pendientes de revisar</option>
               </select>
             </div>
             <div class="form-group">
-              <label for="filter-estado-pago">Estado Pago</label>
+              <label for="filter-estado-pago">¿Pagada en banco?</label>
               <select id="filter-estado-pago">
-                <option value="">Todos</option>
-                <option value="pendiente">Pendiente</option>
-                <option value="parcial">Pago Parcial</option>
-                <option value="pagada">Pagada / Conciliada</option>
+                <option value="">Todas</option>
+                <option value="pendiente">Pendiente de pago</option>
+                <option value="parcial">Pagada en parte</option>
+                <option value="pagada">Pagada por completo</option>
               </select>
             </div>
-            <button class="btn btn-primary" id="btn-apply-filters">Filtrar</button>
-            <button class="btn btn-secondary" id="btn-clear-filters">Limpiar</button>
+            <button class="btn btn-primary" id="btn-apply-filters">Buscar</button>
+            <button class="btn btn-secondary" id="btn-clear-filters">Ver todas</button>
           </div>
 
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Emisión</th>
+                  <th>Fecha</th>
                   <th>Vencimiento</th>
                   <th>Proveedor</th>
                   <th>NIF</th>
@@ -274,60 +283,60 @@
           <!-- Importador de extractos -->
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Importar Extracto Bancario</h2>
+              <h2 class="card-title">1. Subir Movimientos del Banco</h2>
             </div>
             <p style="font-size:0.86rem; color:var(--text-muted); margin-bottom:0.85rem;">
-              Formatos soportados: <strong>Norma 43 (AEB)</strong>, <strong>CAMT.053 (ISO 20022 XML)</strong> y <strong>CSV / Excel (.xlsx)</strong>. Reimportar el mismo fichero nunca duplica movimientos.
+              Descarga el fichero de movimientos desde la web de tu banco (sirve <strong>Norma 43</strong>, <strong>Excel</strong>, <strong>CSV</strong> o <strong>XML</strong>) y súbelo aquí. Si subes el mismo fichero dos veces, el programa no repetirá ningún movimiento.
             </p>
             <form id="form-bank-import">
               <div class="filters-bar">
                 <div class="form-group">
-                  <label>Entidad Bancaria</label>
-                  <input type="text" id="bank-import-name" value="CaixaBank Farmacia" required />
+                  <label>Nombre de tu banco (para distinguirlo)</label>
+                  <input type="text" id="bank-import-name" value="Banco Principal Farmacia" required />
                 </div>
                 <div class="form-group">
-                  <label>Formato</label>
+                  <label>Tipo de archivo</label>
                   <select id="bank-import-format">
-                    <option value="auto">Autodetectar (.n43, .xml, .csv, .xlsx)</option>
-                    <option value="norma43">Norma 43 de la AEB</option>
-                    <option value="camt053">CAMT.053 (ISO 20022 XML)</option>
-                    <option value="csv">CSV / Excel con mapeo</option>
+                    <option value="auto">Detectar automáticamente (Recomendado)</option>
+                    <option value="norma43">Fichero bancario Norma 43 (.n43 / .txt)</option>
+                    <option value="camt053">Fichero bancario XML (CAMT.053)</option>
+                    <option value="csv">Tabla Excel o CSV (.xlsx / .csv)</option>
                   </select>
                 </div>
                 <div class="form-group">
-                  <label>Fichero de extracto</label>
+                  <label>Selecciona el archivo descargado del banco</label>
                   <input type="file" id="bank-import-file" required />
                 </div>
               </div>
 
               <details style="margin-bottom:0.85rem; font-size:0.84rem;">
                 <summary style="cursor:pointer; font-weight:600; color:var(--primary);">
-                  Mapeo personalizado de columnas CSV/Excel (se guarda por banco)
+                  Opciones avanzadas: solo si subes un Excel/CSV con nombres de columna especiales
                 </summary>
                 <div class="filters-bar" style="margin-top:0.65rem;">
                   <div class="form-group">
-                    <label>Columna Fecha</label>
+                    <label>Nombre columna Fecha</label>
                     <input type="text" id="csv-col-fecha" placeholder="Fecha" style="width:120px;" />
                   </div>
                   <div class="form-group">
-                    <label>Columna Concepto</label>
+                    <label>Nombre columna Concepto</label>
                     <input type="text" id="csv-col-concepto" placeholder="Concepto" style="width:130px;" />
                   </div>
                   <div class="form-group">
-                    <label>Columna Importe</label>
+                    <label>Nombre columna Importe</label>
                     <input type="text" id="csv-col-importe" placeholder="Importe" style="width:120px;" />
                   </div>
                   <div class="form-group">
-                    <label>Separador CSV</label>
+                    <label>Separador</label>
                     <input type="text" id="csv-sep" value=";" style="width:60px;" />
                   </div>
                 </div>
               </details>
 
-              <div style="display:flex; gap:0.65rem;">
-                <button type="submit" class="btn btn-primary">Importar y Conciliar</button>
+              <div style="display:flex; gap:0.65rem; flex-wrap:wrap;">
+                <button type="submit" class="btn btn-primary">Subir Extracto y Cruzar Pagos</button>
                 <button type="button" class="btn btn-secondary" id="btn-run-auto-reconcile">
-                  Ejecutar Conciliador Automático
+                  Volver a buscar coincidencias automáticas
                 </button>
               </div>
             </form>
@@ -336,27 +345,27 @@
           <!-- Emparejamiento Manual Muchos-a-Muchos -->
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Conciliación Manual (Muchos a Muchos)</h2>
+              <h2 class="card-title">2. Unir Pago del Banco con Facturas a Mano</h2>
             </div>
             <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
-              Selecciona un movimiento bancario en la tabla inferior y marca las facturas que lo componen (admite pagos agrupados, pagos parciales en plazos y abonos que restan).
+              Si un recibo del banco agrupa varias facturas, tiene un abono descontado o se paga en varios plazos, pulsa <strong>"Unir a mano"</strong> en el movimiento de abajo y marca aquí las facturas que correspondan.
             </p>
             <div id="manual-reconcile-box" style="background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:0.9rem;">
               <div style="font-weight:700; margin-bottom:0.4rem;" id="manual-selected-tx-label">
-                Ningún movimiento seleccionado
+                Ningún movimiento del banco seleccionado todavía
               </div>
               <div style="font-size:0.85rem; margin-bottom:0.65rem;" id="manual-sum-summary">
-                Importe movimiento: <strong>0,00 €</strong> · Suma facturas marcadas: <strong>0,00 €</strong> · Diferencia: <strong>0,00 €</strong>
+                Cargo en banco: <strong>0,00 €</strong> · Suma de facturas marcadas: <strong>0,00 €</strong> · Diferencia: <strong>0,00 €</strong>
               </div>
               <div style="max-height:190px; overflow-y:auto; margin-bottom:0.75rem; border:1px solid var(--border); background:#fff; border-radius:6px;">
                 <table>
                   <thead>
                     <tr>
-                      <th>Sel.</th>
-                      <th>Proveedor / Nº Factura</th>
-                      <th>Vto.</th>
+                      <th>Marcar</th>
+                      <th>Proveedor y Nº Factura</th>
+                      <th>Vencimiento</th>
                       <th class="num">Pendiente</th>
-                      <th class="num">Importe a imputar</th>
+                      <th class="num">Importe que se paga</th>
                     </tr>
                   </thead>
                   <tbody id="tbody-manual-candidate-invoices"></tbody>
@@ -365,10 +374,10 @@
               <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap;">
                 <label style="font-size:0.82rem; display:flex; align-items:center; gap:0.35rem;">
                   <input type="checkbox" id="manual-learn-rule" checked />
-                  Aprender regla automática (Concepto bancario → Proveedor)
+                  Recordar este proveedor para futuros recibos parecidos del banco
                 </label>
                 <button class="btn btn-success btn-sm" id="btn-save-manual-reconcile" disabled>
-                  Guardar Vínculo Manual
+                  Guardar Pago Conciliado
                 </button>
               </div>
             </div>
@@ -378,13 +387,13 @@
         <!-- Tabla de Movimientos Bancarios y Propuestas -->
         <div class="card">
           <div class="card-header">
-            <h2 class="card-title">Movimientos Bancarios y Propuestas de Conciliación</h2>
+            <h2 class="card-title">Movimientos del Banco</h2>
             <div style="display:flex; gap:0.5rem;">
               <select id="filter-bank-status">
-                <option value="">Todos los movimientos</option>
-                <option value="propuesto">Propuestas dudosas (para revisar)</option>
-                <option value="pendiente">Pendientes sin conciliar</option>
-                <option value="conciliado">Conciliados</option>
+                <option value="">Ver todos los movimientos</option>
+                <option value="propuesto">Propuestas para confirmar</option>
+                <option value="pendiente">Pendientes de unir con factura</option>
+                <option value="conciliado">Ya cuadrados con su factura</option>
               </select>
             </div>
           </div>
@@ -393,11 +402,11 @@
               <thead>
                 <tr>
                   <th>Fecha</th>
-                  <th>Banco / Cuenta</th>
-                  <th>Concepto</th>
+                  <th>Banco</th>
+                  <th>Concepto del banco</th>
                   <th class="num">Importe</th>
                   <th>Estado</th>
-                  <th>Facturas Vinculadas / Propuesta</th>
+                  <th>Facturas asociadas</th>
                   <th class="num">Diferencia</th>
                   <th>Acciones</th>
                 </tr>
@@ -409,119 +418,136 @@
       </section>
 
       <!-- ========================================================= -->
-      <!-- 5. CONFIGURACIÓN                                          -->
+      <!-- 5. CONFIGURACIÓN FÁCIL (PARA PERSONAL NO TÉCNICO)         -->
       <!-- ========================================================= -->
       <section id="tab-configuracion" class="tab-panel">
-        <!-- Aviso obligatorio de privacidad sobre Google AI Studio gratuito (Sección 5 y 10) -->
         <div class="alert alert-warning">
-          <strong>Aviso importante de privacidad (Sección 10):</strong> En el nivel gratuito de <em>Google AI Studio</em>, los datos enviados pueden ser utilizados por Google para mejorar sus modelos. Si prefieres confidencialidad estricta para las facturas de la farmacia, utiliza una clave de pago de Google Cloud / Vertex, cambia el proveedor a un endpoint compatible con privacidad empresarial, o activa el modo de extracción local. Todas las claves se guardan en el almacén seguro de credenciales del sistema (<code>keyring</code>), nunca en SQLite.
+          <strong>Nota sobre privacidad de tus facturas:</strong> Si utilizas la versión gratuita del lector de Google, Google podría emplear los documentos procesados para mejorar sus sistemas. Si prefieres privacidad total empresarial, puedes usar una cuenta de Google de pago o elegir el <em>Modo básico sin Internet</em>. Todas tus contraseñas se guardan bajo llave en el sistema de seguridad de Windows/Mac, nunca en archivos sueltos.
         </div>
 
         <div class="grid-2">
-          <!-- Modelo de lenguaje y Almacenamiento -->
+          <!-- Bloque 1: Cómo lee las facturas y dónde las guarda -->
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Procesado IA y Almacenamiento</h2>
+              <h2 class="card-title">1. Lectura de Facturas y Carpeta para la Gestoría</h2>
             </div>
             <form id="form-general-settings">
-              <div class="form-group" style="margin-bottom:0.8rem;">
-                <label>Proveedor del Modelo de Lenguaje</label>
+              <div class="form-group" style="margin-bottom:0.9rem;">
+                <label>¿Cómo quieres que el programa lea los datos de cada factura?</label>
                 <select id="cfg-proveedor-modelo">
-                  <option value="google_ai_studio">Google AI Studio (Gemini API - por defecto)</option>
-                  <option value="openai_compatible">OpenAI / Compatible (OpenAI, Groq, Ollama local)</option>
-                  <option value="heuristico_local">Extractor Heurístico Local (100% sin envío a nube)</option>
+                  <option value="google_ai_studio">Lectura inteligente de Google (Recomendado: lee hasta facturas escaneadas)</option>
+                  <option value="openai_compatible">Otro sistema de Inteligencia Artificial (OpenAI / sistema propio)</option>
+                  <option value="heuristico_local">Modo básico sin Internet (solo para facturas digitales con texto claro)</option>
                 </select>
+                <span class="field-hint">La opción recomendada de Google extrae automáticamente proveedor, NIF, fechas, base, IVA y recargo de equivalencia.</span>
               </div>
-              <div class="form-group" style="margin-bottom:0.8rem;">
-                <label>Nombre del Modelo</label>
-                <input type="text" id="cfg-modelo-llm" placeholder="gemini-2.0-flash" />
+
+              <div class="form-group" style="margin-bottom:0.9rem;">
+                <label>Clave personal de lectura de Google (solo hay que ponerla la primera vez)</label>
+                <input type="password" id="cfg-llm-api-key" placeholder="Pega aquí tu clave si quieres cambiarla o configurarla" />
+                <span id="cfg-key-status" class="field-hint"></span>
               </div>
-              <div class="form-group" style="margin-bottom:0.8rem;">
-                <label>Clave de API (se guarda en el Credential Manager del sistema)</label>
-                <input type="password" id="cfg-llm-api-key" placeholder="Dejar en blanco para mantener la actual" />
-                <small id="cfg-key-status" style="color:var(--text-muted); font-size:0.78rem;"></small>
-              </div>
-              <div class="form-group" style="margin-bottom:0.8rem;">
-                <label>Estrategia para PDFs escaneados (sin capa de texto)</label>
+
+              <div class="form-group" style="margin-bottom:0.9rem;">
+                <label>¿Qué hacer cuando una factura viene escaneada como una foto?</label>
                 <select id="cfg-estrategia-ocr">
-                  <option value="vision_llm">Enviar PDF directamente al modelo con visión</option>
-                  <option value="ocr_local">Aplicar OCR local (Tesseract) antes de enviar</option>
+                  <option value="vision_llm">Lectura visual directa con Inteligencia Artificial (Recomendado)</option>
+                  <option value="ocr_local">Leer el texto en este ordenador antes de analizarla</option>
                 </select>
               </div>
-              <div class="form-group" style="margin-bottom:0.8rem;">
-                <label>Umbral de confianza para auto-confirmar facturas (<span id="cfg-umbral-val">85%</span>)</label>
+
+              <div class="form-group" style="margin-bottom:0.9rem;">
+                <label>Seguridad mínima para dar una factura por buena sin preguntarte (<span id="cfg-umbral-val">85%</span>)</label>
                 <input type="range" id="cfg-umbral-confianza" min="0.50" max="0.99" step="0.01" value="0.85" />
+                <span class="field-hint">Si el programa tiene una seguridad igual o mayor a este porcentaje y la suma de IVA cuadra, confirmará la factura solo. Si tiene menos seguridad, la dejará en la <em>Bandeja de Revisión</em>.</span>
               </div>
-              <div class="form-group" style="margin-bottom:0.8rem;">
-                <label>Capa de Almacenamiento de PDFs</label>
+
+              <div class="form-group" style="margin-bottom:0.9rem;">
+                <label>¿Dónde quieres que se guarden las copias ordenadas en PDF?</label>
                 <select id="cfg-capa-almacenamiento">
-                  <option value="local">Capa 1: Carpeta local / Unidad sincronizada (Google Drive Desktop, OneDrive, Dropbox)</option>
-                  <option value="gdrive">Capa 2: Subida directa a Google Drive por API (OAuth)</option>
+                  <option value="local">En una carpeta de este ordenador (sirve también para Google Drive, OneDrive o Dropbox instalados)</option>
+                  <option value="gdrive">Subir directamente a través de Internet a Google Drive</option>
                 </select>
               </div>
-              <div class="form-group" style="margin-bottom:1rem;">
-                <label>Carpeta de Salida para la Gestoría (Año / Mes / Categoría / Proveedor)</label>
+
+              <div class="form-group" style="margin-bottom:1.1rem;">
+                <label>Carpeta donde se archivarán las facturas para tu gestoría</label>
                 <input type="text" id="cfg-carpeta-salida" />
+                <span class="field-hint">Dentro de esta carpeta el programa creará solo las subcarpetas: <strong>Año → Mes → Categoría → Proveedor</strong>.</span>
               </div>
-              <button type="submit" class="btn btn-primary">Guardar Configuración General</button>
+
+              <input type="hidden" id="cfg-modelo-llm" value="gemini-2.0-flash" />
+              <button type="submit" class="btn btn-primary">Guardar Opciones</button>
             </form>
           </div>
 
-          <!-- Cuentas de Correo (IMAP y OAuth Gmail/Outlook) -->
+          <!-- Bloque 2: Correo de la farmacia -->
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Buzones de Correo Vigilados</h2>
+              <h2 class="card-title">2. Correo Electrónico de la Farmacia</h2>
             </div>
+            <p class="field-hint" style="margin-bottom:0.85rem;">
+              Puedes conectar uno o varios correos (por ejemplo, el correo general de la farmacia y el del titular). El programa solo mira si hay facturas nuevas en PDF y nunca borra ni modifica tus correos.
+            </p>
             <form id="form-mail-account" style="margin-bottom:1rem;">
               <div class="filters-bar">
-                <div class="form-group">
-                  <label>Nombre (ej. Administración, Titular)</label>
-                  <input type="text" id="mail-nombre" placeholder="Administración Farmacia" required />
+                <div class="form-group" style="flex:1;">
+                  <label>Nombre para reconocer este buzón</label>
+                  <input type="text" id="mail-nombre" placeholder="Ej. Correo General Farmacia" required />
                 </div>
-                <div class="form-group">
-                  <label>Correo electrónico</label>
-                  <input type="email" id="mail-email" placeholder="facturas@mifarmacia.es" required />
-                </div>
-                <div class="form-group">
-                  <label>Modo de conexión</label>
-                  <select id="mail-tipo">
-                    <option value="imap">IMAP Genérico (Contraseña de aplicación)</option>
-                    <option value="oauth_gmail">OAuth2 Gmail</option>
-                    <option value="oauth_outlook">OAuth2 Outlook / Microsoft 365</option>
-                  </select>
+                <div class="form-group" style="flex:1;">
+                  <label>Dirección de correo electrónico</label>
+                  <input type="email" id="mail-email" placeholder="Ej. farmacia@micorreo.es" required />
                 </div>
               </div>
               <div class="filters-bar">
-                <div class="form-group">
-                  <label>Servidor IMAP</label>
-                  <input type="text" id="mail-host" placeholder="imap.servidor.es" />
+                <div class="form-group" style="flex:1;">
+                  <label>Tipo de cuenta de correo</label>
+                  <select id="mail-tipo">
+                    <option value="imap">Correo de colegio farmacéutico / dominio propio / con contraseña</option>
+                    <option value="oauth_gmail">Cuenta de Gmail (@gmail.com)</option>
+                    <option value="oauth_outlook">Cuenta de Outlook / Hotmail</option>
+                  </select>
                 </div>
-                <div class="form-group">
-                  <label>Puerto</label>
-                  <input type="number" id="mail-port" value="993" style="width:90px;" />
-                </div>
-                <div class="form-group">
-                  <label>Contraseña o Token OAuth (guardado en Keyring)</label>
-                  <input type="password" id="mail-secret" placeholder="Contraseña o token" />
+                <div class="form-group" style="flex:1;">
+                  <label>Contraseña del correo (se guarda bajo llave)</label>
+                  <input type="password" id="mail-secret" placeholder="Escribe tu contraseña de aplicación" />
                 </div>
               </div>
-              <div class="form-group" style="margin-bottom:0.75rem;">
-                <label>Remitentes candidatos separados por coma (opcional)</label>
-                <input type="text" id="mail-remitentes" placeholder="facturacion@cofares.es, facturacion@bidafarma.es" />
+
+              <details style="margin-bottom:0.75rem; font-size:0.84rem;">
+                <summary style="cursor:pointer; font-weight:600; color:var(--primary);">
+                  Datos del servidor de correo (solo si no es Gmail ni Outlook)
+                </summary>
+                <div class="filters-bar" style="margin-top:0.55rem;">
+                  <div class="form-group" style="flex:2;">
+                    <label>Dirección del servidor de correo entrante (IMAP)</label>
+                    <input type="text" id="mail-host" placeholder="Ej. imap.tulinea.es" />
+                  </div>
+                  <div class="form-group" style="flex:1;">
+                    <label>Puerto (normalmente 993)</label>
+                    <input type="number" id="mail-port" value="993" />
+                  </div>
+                </div>
+              </details>
+
+              <div class="form-group" style="margin-bottom:0.85rem;">
+                <label>Correos de proveedores habituales (opcional, separados por comas)</label>
+                <input type="text" id="mail-remitentes" placeholder="Ej. facturacion@distribuidoranorte.es, recibos@asesoria.es" />
+                <span class="field-hint">Si lo dejas en blanco no pasa nada: el programa revisará igualmente cualquier correo que traiga un PDF con aspecto de factura.</span>
               </div>
-              <button type="submit" class="btn btn-primary btn-sm">Añadir / Actualizar Buzón</button>
+              <button type="submit" class="btn btn-primary btn-sm">Guardar Cuenta de Correo</button>
             </form>
 
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Nombre</th>
+                    <th>Buzón</th>
                     <th>Correo</th>
-                    <th>Modo</th>
-                    <th>Credencial</th>
-                    <th>Última Sincr.</th>
-                    <th>Acción</th>
+                    <th>Contraseña</th>
+                    <th>Última revisión</th>
+                    <th>Quitar</th>
                   </tr>
                 </thead>
                 <tbody id="tbody-mail-accounts"></tbody>
@@ -531,46 +557,49 @@
         </div>
 
         <div class="grid-2">
-          <!-- Reglas por remitente, proveedor y concepto -->
+          <!-- Bloque 3: Costumbres / Reglas de la farmacia -->
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Reglas Automáticas y Aprendidas</h2>
+              <h2 class="card-title">3. Costumbres de tu Farmacia (Clasificación Automática)</h2>
             </div>
+            <p class="field-hint" style="margin-bottom:0.85rem;">
+              Aquí puedes indicarle al programa que las facturas de cierto proveedor vayan siempre a una categoría concreta (por ejemplo, que la factura de la luz vaya siempre a <em>Suministros</em>). También se van añadiendo solas cuando corriges una factura.
+            </p>
             <form id="form-rule" class="filters-bar">
               <div class="form-group">
-                <label>Tipo de Regla</label>
+                <label>¿Cómo quieres identificar la factura?</label>
                 <select id="rule-tipo">
-                  <option value="remitente_categoria">Remitente correo → Proveedor / Categoría</option>
-                  <option value="nif_categoria">NIF / Proveedor → Categoría fija</option>
-                  <option value="concepto_proveedor">Concepto bancario → Proveedor</option>
+                  <option value="remitente_categoria">Por el correo desde el que la envían</option>
+                  <option value="nif_categoria">Por el NIF o nombre del proveedor</option>
+                  <option value="concepto_proveedor">Por el texto que pone en el recibo del banco</option>
                 </select>
               </div>
               <div class="form-group">
-                <label>Patrón (email, NIF o texto)</label>
-                <input type="text" id="rule-patron" placeholder="Ej. cofares.es o A28012345" required />
+                <label>Texto a buscar (correo, NIF o texto del banco)</label>
+                <input type="text" id="rule-patron" placeholder="Ej. distribuidoranorte.es o B12345678" required />
               </div>
               <div class="form-group">
-                <label>Proveedor asignado</label>
-                <input type="text" id="rule-proveedor" placeholder="Ej. Cofares" />
+                <label>Nombre del proveedor</label>
+                <input type="text" id="rule-proveedor" placeholder="Ej. Distribuidora Norte" />
               </div>
               <div class="form-group">
-                <label>Categoría</label>
+                <label>Asignar siempre a esta categoría</label>
                 <select id="rule-categoria">
-                  <option value="">(Sin cambio)</option>
+                  <option value="">(Dejar la que detecte)</option>
                 </select>
               </div>
-              <button type="submit" class="btn btn-primary btn-sm">Crear Regla</button>
+              <button type="submit" class="btn btn-primary btn-sm">Añadir Regla</button>
             </form>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Tipo</th>
-                    <th>Patrón</th>
+                    <th>Se busca por</th>
+                    <th>Dato buscado</th>
                     <th>Proveedor</th>
-                    <th>Categoría</th>
-                    <th>Origen</th>
-                    <th>Acción</th>
+                    <th>Categoría fija</th>
+                    <th>Creada</th>
+                    <th>Quitar</th>
                   </tr>
                 </thead>
                 <tbody id="tbody-rules"></tbody>
@@ -578,19 +607,139 @@
             </div>
           </div>
 
-          <!-- Mantenimiento, Backups y Actualizaciones -->
+          <!-- Bloque 4: Copias de seguridad y Actualizaciones -->
           <div class="card">
             <div class="card-header">
-              <h2 class="card-title">Copia de Seguridad y Actualizaciones</h2>
+              <h2 class="card-title">4. Copias de Seguridad y Actualizaciones</h2>
             </div>
             <p style="font-size:0.86rem; color:var(--text-muted); margin-bottom:1rem;">
-              La aplicación realiza automáticamente una copia de seguridad de SQLite antes de cada migración de esquema y verifica la integridad SHA-256 de cada release publicada en GitHub.
+              El programa guarda una copia de seguridad automática cada vez que se actualiza. Además, con estos dos botones puedes guardar una copia en cualquier momento o comprobar si hay mejoras disponibles.
             </p>
             <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;">
-              <button class="btn btn-secondary" id="btn-manual-backup">Crear Copia de Seguridad SQLite</button>
-              <button class="btn btn-secondary" id="btn-check-updates">Comprobar Actualizaciones en GitHub</button>
+              <button class="btn btn-secondary" id="btn-manual-backup">Guardar Copia de Seguridad Ahora</button>
+              <button class="btn btn-secondary" id="btn-check-updates">Buscar Nuevas Versiones del Programa</button>
             </div>
             <div id="updater-status-box" style="font-size:0.85rem; color:var(--text-muted);"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================= -->
+      <!-- 6. AYUDA PASO A PASO PARA LA FARMACIA                     -->
+      <!-- ========================================================= -->
+      <section id="tab-ayuda" class="tab-panel">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">¿Cómo funciona este programa en el día a día de la farmacia?</h2>
+          </div>
+          <p style="font-size:0.9rem; color:#334155; margin-bottom:1rem;">
+            No necesitas conocimientos de informática ni de contabilidad avanzada. El programa trabaja para ti en <strong>4 pasos automáticos</strong>:
+          </p>
+
+          <div class="help-step">
+            <div class="help-step-num">1</div>
+            <div class="help-step-body">
+              <h3>Recoge las facturas de tu correo (o las que tú subas con un clic)</h3>
+              <p>
+                El programa revisa periódicamente el buzón de correo de la farmacia buscando mensajes nuevos que traigan facturas en PDF. Si tienes alguna factura descargada en el ordenador o escaneada en el mostrador, también puedes añadirla pulsando el botón verde <strong>"+ Añadir Facturas en PDF"</strong> de arriba.
+              </p>
+            </div>
+          </div>
+
+          <div class="help-step">
+            <div class="help-step-num">2</div>
+            <div class="help-step-body">
+              <h3>Lee los importes y comprueba que las cuentas cuadren</h3>
+              <p>
+                El lector inteligente identifica el proveedor, NIF, fecha de emisión, fecha de vencimiento, Base Imponible, IVA, Recargo de Equivalencia e IRPF, y comprueba que la suma coincida con el Total. Si una factura ya había llegado antes (aunque tenga otro nombre), la detecta como repetida y no la duplica.
+              </p>
+            </div>
+          </div>
+
+          <div class="help-step">
+            <div class="help-step-num">3</div>
+            <div class="help-step-body">
+              <h3>Archiva una copia ordenada en carpetas para tu gestoría</h3>
+              <p>
+                Cada factura se guarda automáticamente dentro de la carpeta que elijas siguiendo siempre el mismo orden:
+                <code>Año / Mes / Categoría / Proveedor / Fecha_Proveedor_Numero.pdf</code>. Si esa carpeta es tu carpeta de Google Drive, OneDrive o Dropbox, tu gestoría la recibirá al instante sin que tengas que enviarles correos.
+              </p>
+            </div>
+          </div>
+
+          <div class="help-step">
+            <div class="help-step-num">4</div>
+            <div class="help-step-body">
+              <h3>Cuadra las facturas con el banco y genera el Excel contable</h3>
+              <p>
+                Cuando descargues los movimientos del banco a final de mes, súbelos en la pestaña <strong>"Cuadrar con el Banco"</strong>. El programa marcará como pagadas las facturas que coincidan y te permitirá descargar el <strong>Excel para la gestoría</strong> con un solo clic.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Guía rápida de configuración inicial (una sola vez)</h2>
+            </div>
+            <div class="help-step">
+              <div class="help-step-num">A</div>
+              <div class="help-step-body">
+                <h3>Cómo conseguir la clave gratuita de lectura de Google</h3>
+                <ol>
+                  <li>Entra con tu cuenta de Google en la página oficial <strong>aistudio.google.com</strong>.</li>
+                  <li>Pulsa en el botón <strong>"Get API key"</strong> (Obtener clave) y luego en <strong>"Create API key"</strong>.</li>
+                  <li>Copia el código que aparece en pantalla.</li>
+                  <li>Ven a la pestaña <strong>Configuración Fácil</strong> de este programa, pégalo en la casilla <em>"Clave personal de lectura de Google"</em> y pulsa <strong>Guardar Opciones</strong>.</li>
+                </ol>
+              </div>
+            </div>
+
+            <div class="help-step">
+              <div class="help-step-num">B</div>
+              <div class="help-step-body">
+                <h3>Cómo conectar el correo de la farmacia</h3>
+                <ul>
+                  <li><strong>Si usas Gmail o Outlook:</strong> elige <em>Cuenta de Gmail</em> o <em>Cuenta de Outlook</em> en el selector o utiliza una contraseña de aplicación de 16 letras generada en la seguridad de tu cuenta.</li>
+                  <li><strong>Si usas correo del Colegio de Farmacéuticos o dominio propio:</strong> elige la primera opción, escribe tu correo, tu contraseña y el servidor entrante (por ejemplo <code>imap.tuservidor.es</code>, puerto <code>993</code>).</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2 class="card-title">Preguntas Frecuentes de la Farmacia</h2>
+            </div>
+
+            <details class="faq-item" open>
+              <summary>¿Qué pasa si mi gestoría o yo movemos o cambiamos de nombre un PDF en la carpeta?</summary>
+              <p>
+                <strong>No se rompe nada.</strong> Todas las estadísticas, importes y estados de pago están guardados en la base de datos interna del programa. Si mueves el PDF de sitio, el panel seguirá funcionando igual y solo te avisará si intentas abrir ese PDF desde el botón "Ver PDF".
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary>¿Pueden ver mis facturas desde los otros ordenadores del mostrador?</summary>
+              <p>
+                <strong>No.</strong> Por seguridad, el programa está bloqueado para funcionar únicamente en el ordenador donde está instalado (<code>localhost</code>). Ningún otro ordenador conectado al Wi-Fi o red de la farmacia puede entrar a tu panel.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary>¿El programa borra o modifica algún correo de mi bandeja de entrada?</summary>
+              <p>
+                <strong>Jamás.</strong> El programa se conecta a tu correo en modo de <em>solo lectura</em>: descarga una copia del PDF adjunto, apunta que ese mensaje ya fue revisado para no repetirlo nunca, y deja tu correo intacto.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary>¿Qué hago cuando el banco me pasa un solo cargo que junta varias facturas y un abono?</summary>
+              <p>
+                El programa intenta cruzarlo solo automáticamente. Si no está seguro, ve a <strong>Cuadrar con el Banco</strong>, pulsa <strong>"Unir a mano"</strong> en ese movimiento del banco y marca con un tic las facturas y el abono que entren en esa remesa. Verás arriba cómo la suma se calcula sola al instante.
+              </p>
+            </details>
           </div>
         </div>
       </section>
@@ -614,7 +763,7 @@
           <input type="hidden" id="edit-invoice-id" />
           <div class="filters-bar">
             <div class="form-group" style="flex:2;">
-              <label>Proveedor</label>
+              <label>Nombre del Proveedor</label>
               <input type="text" id="edit-proveedor" required />
             </div>
             <div class="form-group" style="flex:1;">
@@ -625,33 +774,33 @@
 
           <div class="filters-bar">
             <div class="form-group" style="flex:1;">
-              <label>Nº de Factura</label>
+              <label>Número de Factura</label>
               <input type="text" id="edit-numero" required />
             </div>
             <div class="form-group" style="flex:1;">
-              <label>Fecha Emisión</label>
+              <label>Fecha de la Factura</label>
               <input type="date" id="edit-fecha-emision" required />
             </div>
             <div class="form-group" style="flex:1;">
-              <label>Fecha Vencimiento</label>
+              <label>Fecha de Vencimiento (Pago)</label>
               <input type="date" id="edit-fecha-vencimiento" />
             </div>
           </div>
 
           <div class="filters-bar">
             <div class="form-group" style="flex:1;">
-              <label>Categoría</label>
+              <label>Categoría de gasto</label>
               <select id="edit-categoria"></select>
             </div>
             <div class="form-group" style="flex:1;">
-              <label>Tipo de Documento</label>
+              <label>Tipo de documento</label>
               <select id="edit-tipo-documento"></select>
             </div>
           </div>
 
           <div class="filters-bar">
             <div class="form-group" style="flex:1;">
-              <label>Base Imponible (€)</label>
+              <label>Base sin IVA (€)</label>
               <input type="number" step="0.01" id="edit-base" required />
             </div>
             <div class="form-group" style="flex:1;">
@@ -675,25 +824,25 @@
           <div id="edit-math-check" style="font-size:0.84rem; margin-bottom:0.75rem; font-weight:600;"></div>
 
           <div class="form-group" style="margin-bottom:0.85rem;">
-            <label>Notas internas</label>
-            <input type="text" id="edit-notas" placeholder="Observaciones para la gestoría..." />
+            <label>Notas o recordatorios para la gestoría</label>
+            <input type="text" id="edit-notas" placeholder="Ej. Pagado con tarjeta de la farmacia..." />
           </div>
 
           <label style="display:flex; align-items:center; gap:0.45rem; font-size:0.85rem; margin-bottom:1rem;">
             <input type="checkbox" id="edit-learn-rule" checked />
-            Recordar siempre esta categoría y tipo de documento para este proveedor
+            Clasificar siempre a este proveedor en esta misma categoría en el futuro
           </label>
 
           <div style="display:flex; gap:0.65rem; flex-wrap:wrap;">
             <button type="submit" class="btn btn-success">Confirmar y Guardar Factura</button>
-            <button type="button" class="btn btn-danger btn-sm" id="btn-delete-invoice">Eliminar Factura</button>
+            <button type="button" class="btn btn-danger btn-sm" id="btn-delete-invoice">Borrar esta Factura</button>
           </div>
         </form>
 
         <div>
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
-            <span style="font-size:0.82rem; font-weight:600; color:var(--text-muted);">Documento PDF Archivado</span>
-            <a id="modal-open-pdf-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm">Abrir en pestaña nueva</a>
+            <span style="font-size:0.82rem; font-weight:600; color:var(--text-muted);">Vista previa de la factura en PDF</span>
+            <a id="modal-open-pdf-newtab" href="#" target="_blank" class="btn btn-secondary btn-sm">Abrir PDF en grande</a>
           </div>
           <iframe id="modal-pdf-frame" class="pdf-preview-frame" title="Visor PDF de factura"></iframe>
         </div>

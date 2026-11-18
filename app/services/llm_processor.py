@@ -757,19 +757,17 @@ def _classify_document_and_category(text: str, supplier: str) -> tuple[str, str]
     if any(
         w in combined
         for w in (
-            "cofares",
-            "bidafarma",
-            "alliance healthcare",
-            "hefame",
-            "fedefarma",
-            "novaltia",
-            "cinfa",
-            "normon",
-            "stada",
-            "kern pharma",
+            "distribuidora",
+            "cooperativa farmaceutica",
+            "cooperativa farmacéutica",
+            "almacen farmaceutico",
+            "almacén farmacéutico",
+            "laboratorio",
+            "laboratorios",
             "medicamentos",
             "parafarmacia",
             "especialidades farmacéuticas",
+            "especialidades farmaceuticas",
             "recargo de equivalencia",
         )
     ):

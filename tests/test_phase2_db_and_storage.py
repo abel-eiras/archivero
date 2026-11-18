@@ -34,7 +34,7 @@ def test_storage_folder_structure_and_missing_file_resilience(tmp_path: Path):
     pdf_bytes = build_invoice_pdf_bytes(spec["lines"])
 
     # 1. Ingesta inicial
-    res1 = pipeline.ingest_pdf(pdf_bytes, filename="cofares.pdf", sender_email=spec["sender"])
+    res1 = pipeline.ingest_pdf(pdf_bytes, filename="distribuidora_norte.pdf", sender_email=spec["sender"])
     assert res1.status == "insertada"
     assert res1.invoice is not None
 
@@ -46,7 +46,7 @@ def test_storage_folder_structure_and_missing_file_resilience(tmp_path: Path):
     assert rel_parts[0] == "2026"
     assert rel_parts[1] == "11-Noviembre"
     assert rel_parts[2] == "compras_mercancia"
-    assert "Cofares" in rel_parts[3]
+    assert "Distribuidora" in rel_parts[3]
     assert rel_parts[4].startswith("2026-11-02_")
 
     # 2. Detección de duplicados por hash aunque llegue con otro nombre de archivo

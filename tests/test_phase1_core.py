@@ -17,11 +17,11 @@ def test_pdf_hash_and_text_extraction():
     assert len(h1) == 64
     assert h1 == h2
 
-    content = extract_pdf_content(pdf_bytes, filename="cofares.pdf")
+    content = extract_pdf_content(pdf_bytes, filename="distribuidora_norte.pdf")
     assert content.has_text_layer is True
     assert content.extraction_method == "texto_nativo"
-    assert "Cofares" in content.text
-    assert looks_like_invoice(content, filename="cofares.pdf") is True
+    assert "Distribuidora" in content.text
+    assert looks_like_invoice(content, filename="distribuidora_norte.pdf") is True
 
 
 def test_scanned_pdf_without_text_uses_vision_fallback():
@@ -34,13 +34,13 @@ def test_scanned_pdf_without_text_uses_vision_fallback():
 
 
 def test_llm_processor_extracts_pharmacy_invoice_with_recargo_equivalencia():
-    spec = get_sample_invoices_specs()[0]  # Cofares: Base 1200 + IVA 48 + RE 6 = 1254
+    spec = get_sample_invoices_specs()[0]  # Distribuidora Norte: Base 1200 + IVA 48 + RE 6 = 1254
     pdf_bytes = build_invoice_pdf_bytes(spec["lines"])
 
     processor = LLMProcessor(provider_type="heuristico_local", umbral_confianza=0.85)
     result = processor.process_pdf(pdf_bytes, filename=spec["filename"])
 
-    assert result.extraccion.proveedor.startswith("Cofares")
+    assert result.extraccion.proveedor.startswith("Distribuidora")
     assert result.extraccion.nif == "F28012345"
     assert result.extraccion.numero_factura == "FRA-2026-1001"
     assert result.extraccion.fecha_emision == "2026-11-02"

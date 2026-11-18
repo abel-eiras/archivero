@@ -541,3 +541,73 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.25);
   max-width: 400px;
 }
+
+/* Textos de ayuda en formularios y sección de Ayuda */
+.field-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-top: 0.15rem;
+}
+
+.help-step {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 0.85rem;
+}
+
+.help-step-num {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.help-step-body h3 {
+  font-size: 0.96rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.help-step-body p, .help-step-body ol, .help-step-body ul {
+  font-size: 0.87rem;
+  color: #334155;
+}
+
+.help-step-body ol, .help-step-body ul {
+  padding-left: 1.25rem;
+  margin-top: 0.35rem;
+}
+
+.faq-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.65rem;
+  background: #ffffff;
+}
+
+.faq-item summary {
+  font-weight: 700;
+  font-size: 0.92rem;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.faq-item p {
+  margin-top: 0.55rem;
+  font-size: 0.87rem;
+  color: #334155;
+}

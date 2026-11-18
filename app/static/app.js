@@ -1,4 +1,4 @@
-/* Lógica de cliente de FarmaFacturas (100% local, sin dependencias externas) */
+/* Lógica de cliente de FarmaFacturas (100% local, pensada para uso sencillo en farmacia) */
 
 const state = {
   categorias: [],
@@ -6,6 +6,19 @@ const state = {
   selectedBankTx: null,
   unpaidInvoices: [],
   currentEditingInvoice: null,
+};
+
+const RULE_TYPE_LABELS = {
+  remitente_categoria: "Correo del remitente",
+  remitente_proveedor: "Correo del remitente",
+  nif_categoria: "NIF o nombre de proveedor",
+  concepto_proveedor: "Concepto del banco",
+};
+
+const MAIL_TYPE_LABELS = {
+  imap: "Correo con contraseña",
+  oauth_gmail: "Gmail (Google)",
+  oauth_outlook: "Outlook / Hotmail",
 };
 
 function fmtEur(val) {
@@ -19,7 +32,7 @@ function showToast(msg) {
   el.className = "toast";
   el.textContent = msg;
   container.appendChild(el);
-  setTimeout(() => el.remove(), 4200);
+  setTimeout(() => el.remove(), 4500);
 }
 
 function categoryName(code) {
@@ -30,7 +43,7 @@ function categoryName(code) {
 async function apiFetch(url, options = {}) {
   const resp = await fetch(url, options);
   if (!resp.ok) {
-    let detail = `Error HTTP ${resp.status}`;
+    let detail = `Error (${resp.status})`;
     try {
       const errJson = await resp.json();
       detail = errJson.detail || JSON.stringify(errJson);
@@ -47,11 +60,12 @@ function setupTabs() {
   const buttons = document.querySelectorAll(".nav-btn");
   const panels = document.querySelectorAll(".tab-panel");
   const titleMap = {
-    "tab-dashboard": "Panel Principal",
+    "tab-dashboard": "Resumen General",
     "tab-revision": "Bandeja de Revisión",
-    "tab-facturas": "Listado de Facturas",
-    "tab-conciliacion": "Conciliación Bancaria",
-    "tab-configuracion": "Configuración del Sistema",
+    "tab-facturas": "Todas las Facturas",
+    "tab-conciliacion": "Cuadrar con el Banco",
+    "tab-configuracion": "Configuración Fácil",
+    "tab-ayuda": "Ayuda Paso a Paso",
   };
 
   buttons.forEach((btn) => {
@@ -73,7 +87,7 @@ function setupTabs() {
 }
 
 /* =========================================================
-   1. Dashboard
+   1. Resumen General (Dashboard)
    ========================================================= */
 async function loadDashboard() {
   try {
@@ -84,11 +98,11 @@ async function loadDashboard() {
 
     const r = data.resumen || {};
     document.getElementById("kpi-gasto-total").textContent = fmtEur(r.gasto_total);
-    document.getElementById("kpi-base-iva").textContent = `Base: ${fmtEur(r.base_total)} · IVA: ${fmtEur(r.iva_total)}`;
+    document.getElementById("kpi-base-iva").textContent = `Base sin IVA: ${fmtEur(r.base_total)} · IVA: ${fmtEur(r.iva_total)}`;
     document.getElementById("kpi-total-facturas").textContent = String(r.total_facturas || 0);
     document.getElementById("kpi-pendientes-revision").textContent = String(r.pendientes_revision || 0);
     document.getElementById("kpi-importe-impagado").textContent = fmtEur(r.importe_pendiente_pago);
-    document.getElementById("kpi-facturas-impagadas").textContent = `${r.facturas_impagadas || 0} facturas pendientes de conciliar`;
+    document.getElementById("kpi-facturas-impagadas").textContent = `${r.facturas_impagadas || 0} facturas pendientes de pago`;
 
     const badgeRev = document.getElementById("badge-pendientes-revision");
     if (r.pendientes_revision > 0) {
@@ -137,12 +151,12 @@ async function loadDashboard() {
         <td>${escapeHtml(inv.proveedor_nombre)}</td>
         <td>${escapeHtml(inv.numero_factura)}</td>
         <td class="num">${fmtEur(inv.total)}</td>
-        <td><span class="badge badge-warning">${inv.estado_pago}</span></td>
+        <td><span class="badge badge-warning">Pendiente</span></td>
       `;
       tbodyVto.appendChild(tr);
     });
     if (!data.vencimientos_proximos || data.vencimientos_proximos.length === 0) {
-      tbodyVto.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">No hay vencimientos urgentes en los próximos 15 días.</td></tr>`;
+      tbodyVto.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">No hay facturas próximas a vencer en los próximos 15 días.</td></tr>`;
     }
 
     const tbodyPend = document.getElementById("tbody-pendientes-pago");
@@ -159,10 +173,10 @@ async function loadDashboard() {
       tbodyPend.appendChild(tr);
     });
     if (!data.pendientes_pago || data.pendientes_pago.length === 0) {
-      tbodyPend.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">Todas las facturas están pagadas y conciliadas.</td></tr>`;
+      tbodyPend.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">Todas las facturas registradas están ya pagadas.</td></tr>`;
     }
   } catch (err) {
-    showToast("Error cargando dashboard: " + err.message);
+    showToast("Error cargando el resumen: " + err.message);
   }
 }
 
@@ -170,7 +184,7 @@ function renderBarList(containerId, items) {
   const container = document.getElementById(containerId);
   container.innerHTML = "";
   if (!items || items.length === 0) {
-    container.innerHTML = `<div style="color:#64748b;font-size:0.84rem;">Sin datos registrados aún.</div>`;
+    container.innerHTML = `<div style="color:#64748b;font-size:0.84rem;">Todavía no hay facturas registradas.</div>`;
     return;
   }
   const maxAbs = Math.max(...items.map((i) => Math.abs(Number(i.total || 0))), 1);
@@ -197,7 +211,12 @@ function populateCategorySelects() {
   selects.forEach((sel, idx) => {
     if (!sel) return;
     const currentVal = sel.value;
-    const firstOpt = idx === 0 ? `<option value="">Todas las categorías</option>` : idx === 2 ? `<option value="">(Sin cambio)</option>` : "";
+    const firstOpt =
+      idx === 0
+        ? `<option value="">Todas las categorías</option>`
+        : idx === 2
+        ? `<option value="">(Dejar la que detecte)</option>`
+        : "";
     sel.innerHTML =
       firstOpt +
       state.categorias
@@ -227,7 +246,9 @@ async function loadReviewInbox() {
 
     (data.items || []).forEach((inv) => {
       const confPct = Math.round(Number(inv.nivel_confianza || 0) * 100);
-      const motivos = (inv.errores_validacion || []).join(" · ") || `Confianza ${confPct}% (< umbral)`;
+      const motivos =
+        (inv.errores_validacion || []).join(" · ") ||
+        `Lectura con seguridad del ${confPct}% (requiere confirmación)`;
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${inv.fecha_emision || "-"}</td>
@@ -239,19 +260,19 @@ async function loadReviewInbox() {
         <td class="num">${fmtEur(inv.iva)}</td>
         <td class="num">${fmtEur(inv.total)}</td>
         <td>
-          <span class="badge badge-warning">${confPct}%</span>
+          <span class="badge badge-warning">Revisar</span>
           <div style="font-size:0.76rem;color:#92400e;margin-top:0.2rem;">${escapeHtml(motivos)}</div>
         </td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-primary btn-sm" onclick="openInvoiceModal(${inv.id})">Revisar y Corregir</button>
-          <button class="btn btn-success btn-sm" onclick="quickConfirmInvoice(${inv.id})">Confirmar</button>
+          <button class="btn btn-primary btn-sm" onclick="openInvoiceModal(${inv.id})">Corregir / Ver PDF</button>
+          <button class="btn btn-success btn-sm" onclick="quickConfirmInvoice(${inv.id})">Dar por buena</button>
         </td>
       `;
       tbody.appendChild(tr);
     });
 
     if (!data.items || data.items.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:#64748b;padding:1.5rem;">¡Bandeja limpia! No hay facturas pendientes de revisión.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:#64748b;padding:1.5rem;">¡Todo al día! No tienes ninguna factura pendiente de revisar.</td></tr>`;
     }
   } catch (err) {
     showToast("Error cargando bandeja de revisión: " + err.message);
@@ -270,7 +291,7 @@ async function quickConfirmInvoice(invoiceId) {
 }
 
 /* =========================================================
-   3. Listado de Facturas
+   3. Todas las Facturas
    ========================================================= */
 async function loadInvoicesList() {
   try {
@@ -295,11 +316,11 @@ async function loadInvoicesList() {
       const revBadge =
         inv.estado_revision === "confirmada"
           ? `<span class="badge badge-success">Confirmada</span>`
-          : `<span class="badge badge-warning">Pendiente (${Math.round((inv.nivel_confianza || 0) * 100)}%)</span>`;
+          : `<span class="badge badge-warning">Por revisar</span>`;
 
       let pagoBadge = `<span class="badge badge-danger">Pendiente</span>`;
       if (inv.estado_pago === "pagada") pagoBadge = `<span class="badge badge-success">Pagada</span>`;
-      else if (inv.estado_pago === "parcial") pagoBadge = `<span class="badge badge-info">Parcial</span>`;
+      else if (inv.estado_pago === "parcial") pagoBadge = `<span class="badge badge-info">Pago parcial</span>`;
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
@@ -315,7 +336,7 @@ async function loadInvoicesList() {
         <td>${revBadge}</td>
         <td>${pagoBadge}</td>
         <td style="white-space:nowrap;">
-          <button class="btn btn-secondary btn-sm" onclick="openPdfFile(${inv.id})">Abrir PDF</button>
+          <button class="btn btn-secondary btn-sm" onclick="openPdfFile(${inv.id})">Ver PDF</button>
           <button class="btn btn-secondary btn-sm" onclick="openInvoiceModal(${inv.id})">Editar</button>
         </td>
       `;
@@ -323,7 +344,7 @@ async function loadInvoicesList() {
     });
 
     if (!data.items || data.items.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:#64748b;padding:1.5rem;">No se encontraron facturas con los filtros seleccionados.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;color:#64748b;padding:1.5rem;">No se encontraron facturas con esos criterios de búsqueda.</td></tr>`;
     }
   } catch (err) {
     showToast("Error listando facturas: " + err.message);
@@ -346,7 +367,7 @@ async function openPdfFile(invoiceId) {
 }
 
 /* =========================================================
-   Modal de Revisión y Edición con Validación Aritmética en Vivo
+   Modal de Revisión y Edición con Comprobación de Suma en Vivo
    ========================================================= */
 async function openInvoiceModal(invoiceId) {
   try {
@@ -373,7 +394,7 @@ async function openInvoiceModal(invoiceId) {
     const alertsBox = document.getElementById("modal-validation-alerts");
     const errs = inv.errores_validacion || [];
     if (errs.length > 0) {
-      alertsBox.innerHTML = `<div class="alert alert-warning"><strong>Avisos detectados por el validador:</strong><br/>${errs.map(escapeHtml).join("<br/>")}</div>`;
+      alertsBox.innerHTML = `<div class="alert alert-warning"><strong>Puntos a revisar en esta factura:</strong><br/>${errs.map(escapeHtml).join("<br/>")}</div>`;
     } else {
       alertsBox.innerHTML = "";
     }
@@ -402,15 +423,15 @@ function updateLiveMathCheck() {
 
   if (diff <= 0.05) {
     box.style.color = "var(--success)";
-    box.textContent = `✓ Cuadre aritmético correcto: Base (${fmtEur(base)}) + IVA (${fmtEur(iva)}) + R.E. (${fmtEur(rec)}) - IRPF (${fmtEur(irpf)}) = ${fmtEur(expected)}`;
+    box.textContent = `✓ Los importes cuadran: Base (${fmtEur(base)}) + IVA (${fmtEur(iva)}) + R.E. (${fmtEur(rec)}) - IRPF (${fmtEur(irpf)}) = ${fmtEur(expected)}`;
   } else {
     box.style.color = "var(--danger)";
-    box.textContent = `⚠ Descuadre de ${fmtEur(diff)}: la suma calculada es ${fmtEur(expected)} pero el Total es ${fmtEur(total)}`;
+    box.textContent = `⚠ Los importes no cuadran por ${fmtEur(diff)}: la suma da ${fmtEur(expected)} pero en Total figura ${fmtEur(total)}`;
   }
 }
 
 /* =========================================================
-   4. Conciliación Bancaria (Automática y Manual M:N)
+   4. Cuadrar con el Banco (Conciliación Bancaria)
    ========================================================= */
 async function loadBankReconciliation() {
   try {
@@ -428,9 +449,9 @@ async function loadBankReconciliation() {
     tbody.innerHTML = "";
 
     (txData.items || []).forEach((tx) => {
-      let badge = `<span class="badge badge-danger">Pendiente</span>`;
-      if (tx.estado_conciliacion === "conciliado") badge = `<span class="badge badge-success">Conciliado</span>`;
-      else if (tx.estado_conciliacion === "propuesto") badge = `<span class="badge badge-warning">Propuesta automática</span>`;
+      let badge = `<span class="badge badge-danger">Sin factura asignada</span>`;
+      if (tx.estado_conciliacion === "conciliado") badge = `<span class="badge badge-success">Cuadrado con factura</span>`;
+      else if (tx.estado_conciliacion === "propuesto") badge = `<span class="badge badge-warning">Coincidencia encontrada</span>`;
 
       const links = tx.vinculos || [];
       const linksHtml =
@@ -438,24 +459,24 @@ async function loadBankReconciliation() {
           ? links
               .map(
                 (l) =>
-                  `<div><strong>${escapeHtml(l.proveedor_nombre)}</strong> · Fra. ${escapeHtml(l.numero_factura)} (${fmtEur(l.importe_asignado)}) <small>[${Math.round((l.confianza || 1) * 100)}%]</small></div>`
+                  `<div><strong>${escapeHtml(l.proveedor_nombre)}</strong> · Fra. ${escapeHtml(l.numero_factura)} (${fmtEur(l.importe_asignado)})</div>`
               )
               .join("")
-          : `<span style="color:#64748b;">Sin vincular</span>`;
+          : `<span style="color:#64748b;">Ninguna factura unida aún</span>`;
 
       let actionsHtml = "";
       if (tx.estado_conciliacion === "propuesto") {
         actionsHtml = `
-          <button class="btn btn-success btn-sm" onclick="confirmBankProposal(${tx.id})">Aceptar</button>
-          <button class="btn btn-danger btn-sm" onclick="rejectBankProposal(${tx.id})">Descartar</button>
+          <button class="btn btn-success btn-sm" onclick="confirmBankProposal(${tx.id})">Confirmar</button>
+          <button class="btn btn-danger btn-sm" onclick="rejectBankProposal(${tx.id})">No es esta</button>
         `;
       } else if (tx.estado_conciliacion === "conciliado") {
         actionsHtml = `
-          <button class="btn btn-secondary btn-sm" onclick="rejectBankProposal(${tx.id})">Desvincular</button>
+          <button class="btn btn-secondary btn-sm" onclick="rejectBankProposal(${tx.id})">Deshacer unión</button>
         `;
       } else {
         actionsHtml = `
-          <button class="btn btn-primary btn-sm" onclick='selectTxForManual(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>Conciliar Manual</button>
+          <button class="btn btn-primary btn-sm" onclick='selectTxForManual(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>Unir a mano</button>
         `;
       }
 
@@ -474,17 +495,17 @@ async function loadBankReconciliation() {
     });
 
     if (!txData.items || txData.items.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#64748b;padding:1.5rem;">No hay movimientos bancarios importados. Importa un fichero Norma 43, CAMT.053 o CSV.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#64748b;padding:1.5rem;">Todavía no has subido ningún archivo de movimientos del banco.</td></tr>`;
     }
   } catch (err) {
-    showToast("Error cargando conciliación bancaria: " + err.message);
+    showToast("Error cargando movimientos del banco: " + err.message);
   }
 }
 
 function selectTxForManual(tx) {
   state.selectedBankTx = tx;
   document.getElementById("manual-selected-tx-label").textContent =
-    `Movimiento #${tx.id} (${tx.fecha}) · ${tx.concepto} · Importe: ${fmtEur(tx.importe)}`;
+    `Movimiento seleccionado (${tx.fecha}) · ${tx.concepto} · Importe: ${fmtEur(tx.importe)}`;
   document.getElementById("btn-save-manual-reconcile").disabled = false;
   renderManualCandidateInvoices();
   recalculateManualSummary();
@@ -523,13 +544,13 @@ function recalculateManualSummary() {
 
   const diff = Math.round((expectedInvoicesNet - sumAssigned) * 100) / 100;
   document.getElementById("manual-sum-summary").innerHTML =
-    `Importe movimiento: <strong>${fmtEur(txAmt)}</strong> · Suma facturas marcadas: <strong>${fmtEur(sumAssigned)}</strong> · Diferencia pendiente: <strong style="color:${Math.abs(diff) <= 0.05 ? "var(--success)" : "var(--warning)"};">${fmtEur(diff)}</strong>`;
+    `Cargo en banco: <strong>${fmtEur(txAmt)}</strong> · Suma de facturas marcadas: <strong>${fmtEur(sumAssigned)}</strong> · Diferencia: <strong style="color:${Math.abs(diff) <= 0.05 ? "var(--success)" : "var(--warning)"};">${fmtEur(diff)}</strong>`;
 }
 
 async function confirmBankProposal(movId) {
   try {
     await apiFetch(`/api/bank/transactions/${movId}/confirm-proposal`, { method: "POST" });
-    showToast("Propuesta de conciliación confirmada.");
+    showToast("Pago confirmado y factura marcada como pagada.");
     loadBankReconciliation();
     loadDashboard();
   } catch (err) {
@@ -540,7 +561,7 @@ async function confirmBankProposal(movId) {
 async function rejectBankProposal(movId) {
   try {
     await apiFetch(`/api/bank/transactions/${movId}/reject-proposal`, { method: "POST" });
-    showToast("Vínculo descartado; el movimiento vuelve a estar pendiente.");
+    showToast("Unión deshecha; el movimiento vuelve a quedar pendiente.");
     loadBankReconciliation();
     loadDashboard();
   } catch (err) {
@@ -549,7 +570,7 @@ async function rejectBankProposal(movId) {
 }
 
 /* =========================================================
-   5. Configuración (IA, Almacenamiento, Correo, Reglas, Backups)
+   5. Configuración Fácil
    ========================================================= */
 async function loadConfiguration() {
   try {
@@ -569,46 +590,51 @@ async function loadConfiguration() {
 
     const keyConfigured = settings.estado_secretos && settings.estado_secretos.llm_api_key_configurada;
     document.getElementById("cfg-key-status").textContent = keyConfigured
-      ? "✓ Clave almacenada de forma segura en el almacén de credenciales del sistema."
-      : "Sin clave externa configurada (se usará el extractor heurístico local de respaldo).";
+      ? "✓ Tu clave ya está guardada de forma segura en este ordenador."
+      : "Aún no has puesto ninguna clave externa (el programa funcionará usando el lector básico del ordenador).";
 
     const tbodyMail = document.getElementById("tbody-mail-accounts");
     tbodyMail.innerHTML = "";
     (mailData.items || []).forEach((acc) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><strong>${escapeHtml(acc.nombre)}</strong></td>
+        <td><strong>${escapeHtml(acc.nombre)}</strong><br/><small style="color:#64748b;">${escapeHtml(MAIL_TYPE_LABELS[acc.tipo_conexion] || acc.tipo_conexion)}</small></td>
         <td>${escapeHtml(acc.email)}</td>
-        <td>${escapeHtml(acc.tipo_conexion)}</td>
-        <td>${acc.credencial_configurada ? '<span class="badge badge-success">En Keyring</span>' : '<span class="badge badge-warning">Sin clave</span>'}</td>
-        <td><small>${acc.ultima_sincronizacion || "Nunca"}</small></td>
-        <td><button class="btn btn-danger btn-sm" onclick="deleteMailAccount(${acc.id})">Eliminar</button></td>
+        <td>${acc.credencial_configurada ? '<span class="badge badge-success">Guardada</span>' : '<span class="badge badge-warning">Falta ponerla</span>'}</td>
+        <td><small>${acc.ultima_sincronizacion || "Aún no revisado"}</small></td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteMailAccount(${acc.id})">Quitar</button></td>
       `;
       tbodyMail.appendChild(tr);
     });
+    if (!mailData.items || mailData.items.length === 0) {
+      tbodyMail.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">No hay ningún buzón de correo añadido todavía.</td></tr>`;
+    }
 
     const tbodyRules = document.getElementById("tbody-rules");
     tbodyRules.innerHTML = "";
     (rulesData.items || []).forEach((r) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${escapeHtml(r.tipo_regla)}</td>
-        <td><code>${escapeHtml(r.patron)}</code></td>
+        <td>${escapeHtml(RULE_TYPE_LABELS[r.tipo_regla] || r.tipo_regla)}</td>
+        <td><strong>${escapeHtml(r.patron)}</strong></td>
         <td>${escapeHtml(r.proveedor_nombre || "-")}</td>
         <td>${escapeHtml(categoryName(r.categoria))}</td>
-        <td>${r.aprendida ? '<span class="badge badge-info">Aprendida</span>' : '<span class="badge badge-success">Manual</span>'}</td>
-        <td><button class="btn btn-danger btn-sm" onclick="deleteRule(${r.id})">Borrar</button></td>
+        <td>${r.aprendida ? '<span class="badge badge-info">Automática</span>' : '<span class="badge badge-success">Puesta por ti</span>'}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteRule(${r.id})">Quitar</button></td>
       `;
       tbodyRules.appendChild(tr);
     });
+    if (!rulesData.items || rulesData.items.length === 0) {
+      tbodyRules.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#64748b;">Todavía no hay reglas creadas.</td></tr>`;
+    }
   } catch (err) {
-    showToast("Error cargando configuración: " + err.message);
+    showToast("Error cargando opciones: " + err.message);
   }
 }
 
 async function deleteMailAccount(id) {
   await apiFetch(`/api/mail/accounts/${id}`, { method: "DELETE" });
-  showToast("Buzón eliminado.");
+  showToast("Cuenta de correo eliminada.");
   loadConfiguration();
 }
 
@@ -640,46 +666,46 @@ document.addEventListener("DOMContentLoaded", () => {
     const fd = new FormData();
     for (const f of files) fd.append("files", f);
     try {
-      showToast(`Procesando ${files.length} archivo(s) PDF...`);
+      showToast(`Leyendo y archivando ${files.length} factura(s) PDF...`);
       const res = await apiFetch("/api/invoices/upload", { method: "POST", body: fd });
-      showToast(`Procesados: ${res.insertadas} nuevas, ${res.duplicadas} duplicadas.`);
+      showToast(`Listo: ${res.insertadas} factura(s) nueva(s), ${res.duplicadas} ya estaban guardadas.`);
       loadDashboard();
       loadInvoicesList();
       loadReviewInbox();
     } catch (err) {
-      showToast("Error subiendo PDF: " + err.message);
+      showToast("Error al añadir PDF: " + err.message);
     } finally {
       e.target.value = "";
     }
   });
 
-  // Botón cargar muestra Fase 0
+  // Botón cargar datos de ejemplo
   document.getElementById("btn-load-demo").addEventListener("click", async () => {
     try {
-      showToast("Generando e ingiriendo muestra de Fase 0...");
+      showToast("Cargando facturas y movimientos bancarios de ejemplo...");
       const res = await apiFetch("/api/demo/load-sample-data", { method: "POST" });
       showToast(
-        `Muestra Fase 0 lista: ${res.facturas_insertadas} facturas y ${res.movimientos_insertados} movimientos bancarios.`
+        `Datos de ejemplo listos: ${res.facturas_insertadas} facturas y ${res.movimientos_insertados} movimientos del banco.`
       );
       loadDashboard();
       loadReviewInbox();
       loadInvoicesList();
       loadBankReconciliation();
     } catch (err) {
-      showToast("Error cargando muestra: " + err.message);
+      showToast("Error cargando datos de ejemplo: " + err.message);
     }
   });
 
-  // Botón sincronizar correo
+  // Botón revisar correo ahora
   document.getElementById("btn-sync-mail").addEventListener("click", async () => {
     try {
-      showToast("Sincronizando buzones de correo activos...");
+      showToast("Buscando facturas nuevas en tu correo...");
       const res = await apiFetch("/api/mail/sync", { method: "POST" });
       const total = (res.sincronizaciones || []).reduce((acc, s) => acc + (s.facturas_insertadas || 0), 0);
-      showToast(`Sincronización completada (${total} nuevas facturas).`);
+      showToast(`Revisión terminada: ${total} factura(s) nueva(s) encontrada(s).`);
       loadDashboard();
     } catch (err) {
-      showToast("Error sincronizando correo: " + err.message);
+      showToast("Error revisando el correo: " + err.message);
     }
   });
 
@@ -733,7 +759,7 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      showToast("Factura confirmada y actualizada en SQLite.");
+      showToast("Factura confirmada y guardada.");
       document.getElementById("invoice-modal").classList.remove("open");
       loadReviewInbox();
       loadInvoicesList();
@@ -745,10 +771,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-delete-invoice").addEventListener("click", async () => {
     const id = document.getElementById("edit-invoice-id").value;
-    if (!id || !confirm("¿Seguro que deseas eliminar esta factura de SQLite?")) return;
+    if (!id || !confirm("¿Seguro que quieres borrar esta factura del programa?")) return;
     await apiFetch(`/api/invoices/${id}`, { method: "DELETE" });
     document.getElementById("invoice-modal").classList.remove("open");
-    showToast("Factura eliminada.");
+    showToast("Factura borrada.");
     loadReviewInbox();
     loadInvoicesList();
     loadDashboard();
@@ -777,20 +803,20 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await apiFetch("/api/bank/import", { method: "POST", body: fd });
       showToast(
-        `Extracto (${res.formato_detectado}): ${res.nuevos_insertados} nuevos movimientos, ${res.duplicados_omitidos} duplicados omitidos.`
+        `Extracto leído: ${res.nuevos_insertados} movimientos nuevos añadidos (${res.duplicados_omitidos} repetidos ignorados).`
       );
       fileInput.value = "";
       loadBankReconciliation();
       loadDashboard();
     } catch (err) {
-      showToast("Error importando extracto: " + err.message);
+      showToast("Error subiendo el archivo del banco: " + err.message);
     }
   });
 
   document.getElementById("btn-run-auto-reconcile").addEventListener("click", async () => {
     const res = await apiFetch("/api/bank/auto-reconcile", { method: "POST" });
     showToast(
-      `Conciliador: ${res.conciliados_automaticos || 0} conciliados automáticos, ${res.propuestas_revision || 0} propuestas.`
+      `Búsqueda terminada: ${res.conciliados_automaticos || 0} pagos cuadrados solos y ${res.propuestas_revision || 0} propuestas para revisar.`
     );
     loadBankReconciliation();
     loadDashboard();
@@ -806,7 +832,7 @@ document.addEventListener("DOMContentLoaded", () => {
       asignaciones.push({ factura_id: id, importe_asignado: val });
     });
     if (asignaciones.length === 0) {
-      showToast("Marca al menos una factura para vincular al movimiento.");
+      showToast("Marca con un tic al menos una factura de la lista.");
       return;
     }
     try {
@@ -821,16 +847,17 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       showToast(
         res.cuadra_exacto
-          ? "Conciliación manual guardada (cuadre exacto)."
-          : `Conciliación guardada con diferencia pendiente de ${fmtEur(res.diferencia_pendiente)}.`
+          ? "Pago unido con sus facturas correctamente (suma exacta)."
+          : `Pago guardado dejando una diferencia pendiente de ${fmtEur(res.diferencia_pendiente)}.`
       );
       state.selectedBankTx = null;
       document.getElementById("btn-save-manual-reconcile").disabled = true;
-      document.getElementById("manual-selected-tx-label").textContent = "Ningún movimiento seleccionado";
+      document.getElementById("manual-selected-tx-label").textContent =
+        "Ningún movimiento del banco seleccionado todavía";
       loadBankReconciliation();
       loadDashboard();
     } catch (err) {
-      showToast("Error en conciliación manual: " + err.message);
+      showToast("Error guardando la unión: " + err.message);
     }
   });
 
@@ -843,7 +870,7 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     const payload = {
       proveedor_modelo: document.getElementById("cfg-proveedor-modelo").value,
-      modelo_llm: document.getElementById("cfg-modelo-llm").value.trim(),
+      modelo_llm: document.getElementById("cfg-modelo-llm").value.trim() || "gemini-2.0-flash",
       estrategia_ocr: document.getElementById("cfg-estrategia-ocr").value,
       umbral_confianza: parseFloat(document.getElementById("cfg-umbral-confianza").value),
       capa_almacenamiento: document.getElementById("cfg-capa-almacenamiento").value,
@@ -857,10 +884,10 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload),
       });
       document.getElementById("cfg-llm-api-key").value = "";
-      showToast("Configuración guardada correctamente.");
+      showToast("Opciones guardadas correctamente.");
       loadConfiguration();
     } catch (err) {
-      showToast("Error guardando configuración: " + err.message);
+      showToast("Error guardando opciones: " + err.message);
     }
   });
 
@@ -887,10 +914,10 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload),
       });
       document.getElementById("mail-secret").value = "";
-      showToast("Buzón de correo guardado (credencial en almacén seguro).");
+      showToast("Cuenta de correo guardada de forma segura.");
       loadConfiguration();
     } catch (err) {
-      showToast("Error guardando buzón: " + err.message);
+      showToast("Error guardando cuenta de correo: " + err.message);
     }
   });
 
@@ -908,25 +935,25 @@ document.addEventListener("DOMContentLoaded", () => {
       body: JSON.stringify(payload),
     });
     document.getElementById("rule-patron").value = "";
-    showToast("Regla creada.");
+    showToast("Regla añadida.");
     loadConfiguration();
   });
 
   document.getElementById("btn-manual-backup").addEventListener("click", async () => {
     const res = await apiFetch("/api/database/backup", { method: "POST" });
-    showToast(res.created ? `Copia creada: ${res.backup_path}` : "Base de datos vacía.");
+    showToast(res.created ? `Copia de seguridad guardada en: ${res.backup_path}` : "Todavía no hay datos que copiar.");
   });
 
   document.getElementById("btn-check-updates").addEventListener("click", async () => {
     const box = document.getElementById("updater-status-box");
-    box.textContent = "Consultando GitHub Releases...";
+    box.textContent = "Comprobando si hay una versión nueva...";
     const res = await apiFetch("/api/updater/check");
     if (res.error) {
-      box.textContent = `Aviso: ${res.error}`;
+      box.textContent = `No se pudo comprobar ahora mismo: ${res.error}`;
     } else if (res.hay_actualizacion) {
-      box.innerHTML = `<strong style="color:var(--success);">Nueva versión disponible: ${escapeHtml(res.version_remota)}</strong> (Actual: ${escapeHtml(res.version_actual)}) · SHA256 verificado: <code>${escapeHtml(res.sha256_esperado || "pendiente")}</code>`;
+      box.innerHTML = `<strong style="color:var(--success);">¡Hay una versión nueva disponible (${escapeHtml(res.version_remota)})!</strong> Ya puedes actualizar desde el programa.`;
     } else {
-      box.textContent = `Estás en la última versión (${res.version_actual}). ${res.mensaje || ""}`;
+      box.textContent = `Ya tienes instalada la última versión disponible (${res.version_actual}).`;
     }
   });
 });

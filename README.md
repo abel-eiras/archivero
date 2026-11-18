@@ -1,64 +1,175 @@
-# FarmaFacturas — Gestor Local de Facturas por Correo y Conciliación Bancaria para Farmacias
+# Archivero (FarmaFacturas) — Gestor Automático de Facturas y Banco para Farmacias
 
-Aplicación web local (`localhost`), diseñada para instalarse en el ordenador de cada farmacia, que vigila uno o varios buzones de correo, detecta facturas de proveedores recibidas en PDF, las clasifica y extrae sus datos con IA (con validación aritmética y de fechas), las archiva en una estructura fija de carpetas para la gestoría y permite conciliarlas con los extractos bancarios.
+Repositorio oficial: **[https://github.com/abel-eiras/archivero](https://github.com/abel-eiras/archivero)**
 
----
+**Archivero** es un programa sencillo que se instala en el ordenador de tu farmacia. Se encarga de vigilar tu correo electrónico, detectar las facturas que te envían tus proveedores en PDF, leer sus datos e importes automáticamente, guardarlas ordenadas por carpetas para tu gestoría y comprobar cuáles están ya pagadas en el banco.
 
-## Principios de Arquitectura Implementados
-
-1. **SQLite como única fuente de verdad (`app/db/database.py`)**: Todo el dashboard, listados, conciliación y exportación a Excel leen exclusivamente de SQLite (modo `WAL`, claves foráneas activas y copia de seguridad automática antes de cada migración de esquema).
-2. **Copia archivada resiliente para la gestoría (`app/services/storage.py`)**:
-   - Estructura fija: `{Año}/{Mes}/{Categoría}/{Proveedor}/{Fecha}_{Proveedor}_{NumeroFactura}.pdf`.
-   - Escritura primero en carpeta temporal (`.tmp_staging`) y movimiento atómico con reintentos ante fallos o lentitud de unidades montadas (Google Drive Desktop, OneDrive, Dropbox).
-   - **Dos capas bajo la misma interfaz (`StorageBackend`)**:
-     - **Capa 1 (`LocalFolderStorage`)**: escritura en carpeta local o unidad sincronizada.
-     - **Capa 2 (`GoogleDriveStorage`)**: subida directa mediante Google Drive API v3 con OAuth2.
-   - Si alguien mueve o renombra un PDF fuera de la aplicación, el panel sigue funcionando sin fallos y el visor avisa de que el archivo no se encuentra en la ruta registrada.
-3. **Procesado con Modelo de Lenguaje + Validación (`app/services/llm_processor.py`)**:
-   - Proveedor por defecto: **Google AI Studio (Gemini API)** con soporte multimodal nativo (`application/pdf`) para facturas escaneadas sin capa de texto, configurable también para **OpenAI / Compatible** (OpenAI, Groq, Ollama local) y con **Extractor Heurístico Local** de respaldo (reconoce NIFs, fechas, Base Imponible, IVA, Recargo de Equivalencia e IRPF sin necesidad de red).
-   - Validador estricto (`validate_invoice_extraction`): comprueba que `Base Imponible + IVA + Recargo de Equivalencia - IRPF == Total` (±0,05 €), coherencia de fechas (`vencimiento >= emisión`) y campos obligatorios.
-   - Si la confianza supera el umbral configurable (por defecto `85%`) y no hay errores de validación, queda `confirmada`; en caso contrario pasa a la **Bandeja de Revisión**.
-4. **Módulo de Correo (`app/services/mail_poller.py`)**:
-   - Soporta múltiples cuentas por instalación (ej. administración y titular).
-   - Conectores **IMAP genérico** y **OAuth2 (XOAUTH2) para Gmail y Outlook**.
-   - Deduplicación estricta en SQLite (`mensajes_procesados` por `Message-ID`) y por hash `SHA-256` del binario del PDF.
-5. **Conciliación Bancaria (`app/services/bank_parsers.py` y `app/services/reconciliation.py`)**:
-   - Importadores para **Norma 43 (AEB)**, **CAMT.053 (ISO 20022 XML)** y **CSV / Excel (`.xlsx`)** con mapeo de columnas guardado por banco.
-   - Conciliador automático 1:1 y 1:N (pagos agrupados y abonos que restan).
-   - Conciliación manual muchos-a-muchos (1 pago para varias facturas, 1 factura en varios plazos, abonos y registro de diferencias pendientes con aprendizaje automático de reglas `concepto -> proveedor`).
-6. **Seguridad y Actualizaciones (`app/services/credentials.py`, `app/services/updater_service.py`, `updater.py`)**:
-   - Contraseñas, tokens OAuth y claves de API se guardan en el almacén seguro del sistema (`keyring` / Credential Manager o bóveda cifrada Fernet), nunca en SQLite.
-   - Servidor vinculado a `127.0.0.1` (`localhost`).
-   - Actualizador independiente (`updater.py`) con verificación obligatoria de hash `SHA-256` antes de reemplazar el ejecutable.
+> **Pensado para farmacéuticos sin conocimientos informáticos:** No necesitas saber nada de programación ni de contabilidad complicada. Todo funciona en tu propio ordenador, con botones claros en español y sin cuotas de servidores externos.
 
 ---
 
-## Puesta en Marcha Rápida
+## Índice de esta Guía
 
-### 1. Arrancar la aplicación web local
+1. [¿Qué hace este programa por tu farmacia?](#1-qué-hace-este-programa-por-tu-farmacia)
+2. [Cómo instalar el programa (Windows y Mac)](#2-cómo-instalar-el-programa-windows-y-mac)
+3. [Configuración inicial en 5 minutos (solo el primer día)](#3-configuración-inicial-en-5-minutos-solo-el-primer-día)
+4. [Cómo usar el programa en el día a día](#4-cómo-usar-el-programa-en-el-día-a-día)
+5. [Cómo quedan ordenadas las carpetas para tu gestoría](#5-cómo-quedan-ordenadas-las-carpetas-para-tu-gestoría)
+6. [Seguridad, privacidad y preguntas frecuentes](#6-seguridad-privacidad-y-preguntas-frecuentes)
+7. [Información técnica para instaladores y desarrolladores](#7-información-técnica-para-instaladores-y-desarrolladores)
+
+---
+
+## 1. ¿Qué hace este programa por tu farmacia?
+
+- **Recoge tus facturas solo:** Revisa el correo de la farmacia (puedes poner más de uno, por ejemplo el de administración y el del titular) y descarga los PDFs de facturas nuevas sin tocar ni borrar tus correos.
+- **También admite facturas sueltas:** Si escaneas una factura en papel o la descargas de la web de un proveedor, puedes añadirla con el botón **"+ Añadir Facturas en PDF"**.
+- **Lee todos los datos e importes:** Extrae el nombre del proveedor, NIF, número de factura, fecha de factura, fecha de vencimiento, Base sin IVA, IVA, **Recargo de Equivalencia** e **IRPF**, y comprueba que la suma cuadre al céntimo con el Total.
+- **No duplica nunca nada:** Si un proveedor te envía dos veces el mismo PDF (aunque le cambie el nombre al archivo), el programa reconoce que es el mismo documento y no lo mete dos veces.
+- **Te avisa si algo no cuadra:** Si una factura viene borrosa o la suma de Base + IVA no coincide con el Total, la deja apartada en la **Bandeja de Revisión** para que la confirmes viendo el PDF al lado.
+- **Ordena los PDFs para tu gestoría:** Crea él solo las carpetas por **Año → Mes → Categoría → Proveedor** y les pone un nombre limpio (`Fecha_Proveedor_NumeroFactura.pdf`).
+- **Cruza las facturas con el banco:** Subes el archivo de movimientos de tu banco (Norma 43, Excel, CSV o XML) y el programa marca qué facturas están ya pagadas, incluyendo remesas que agrupan varias facturas y abonos que restan.
+- **Genera el Excel contable en un clic:** Descarga un archivo Excel (`.xlsx`) con todas las facturas, desgloses de IVA/Recargo, gastos por mes y estado de pago listo para tu gestoría.
+
+---
+
+## 2. Cómo instalar el programa (Windows y Mac)
+
+### Opción A: Con el programa descargable (Recomendado para farmacias)
+
+1. Entra en la página de descargas del proyecto: **[https://github.com/abel-eiras/archivero/releases](https://github.com/abel-eiras/archivero/releases)**.
+2. En la versión más reciente (arriba del todo), haz clic en el archivo para tu ordenador:
+   - En **Windows**: descarga `FarmaFacturas.exe`.
+   - En **Mac**: descarga el archivo para Mac (`FarmaFacturas-Mac`).
+3. Haz doble clic sobre el programa descargado.
+4. Abre tu navegador de Internet habitual (Chrome, Edge, Safari) y entra en la dirección:
+   👉 **`http://127.0.0.1:8000`**
+
+*(Consejo: guarda esa dirección en la barra de Favoritos / Marcadores de tu navegador para abrirla siempre con un clic).*
+
+---
+
+## 3. Configuración inicial en 5 minutos (solo el primer día)
+
+Al abrir el programa, haz clic en el menú izquierdo en **Configuración Fácil**. Solo tienes que rellenar tres cosas:
+
+### Paso 1: Elegir la carpeta para tu gestoría
+En el apartado **1. Lectura de Facturas y Carpeta para la Gestoría**:
+- En la casilla **"Carpeta donde se archivarán las facturas para tu gestoría"**, escribe o pega la ruta de la carpeta de tu ordenador donde quieres que se vayan guardando los PDFs ordenados.
+- **Truco para no tener que enviar correos a la gestoría:** Si tienes instalado en el ordenador *Google Drive para escritorio*, *OneDrive* o *Dropbox*, elige una carpeta que esté dentro de tu Drive o Dropbox compartida con la gestoría. Así, cada vez que el programa archive una factura, a tu gestoría le aparecerá automáticamente en su ordenador.
+
+### Paso 2: Poner la clave gratuita de lectura inteligente de Google
+Para que el programa pueda leer cualquier factura (incluso las escaneadas o torcidas):
+1. Entra con tu cuenta de Google en **[https://aistudio.google.com](https://aistudio.google.com)**.
+2. Pulsa en el botón **"Get API key"** (arriba a la izquierda) y luego en **"Create API key"**.
+3. Copia el código largo de letras y números que te aparece.
+4. Vuelve a **Configuración Fácil** en el programa, pégalo en la casilla **"Clave personal de lectura de Google"** y pulsa el botón verde **Guardar Opciones**.
+
+*(Si no quieres usar Internet para leer las facturas, puedes cambiar el desplegable superior a **"Modo básico sin Internet"**).*
+
+### Paso 3: Conectar el correo de la farmacia
+En el apartado **2. Correo Electrónico de la Farmacia**:
+1. Pon un nombre para reconocerlo (por ejemplo: `Correo General Farmacia`).
+2. Escribe tu dirección de correo electrónico.
+3. Elige el tipo de cuenta:
+   - Si es un correo del Colegio de Farmacéuticos o de tu propio dominio: elige la primera opción, abre *"Datos del servidor de correo"* y pon el servidor entrante que te dio tu proveedor (por ejemplo `imap.tuservidor.es`, puerto `993`).
+   - Si es **Gmail** o **Outlook/Hotmail**: elige la opción correspondiente e introduce tu contraseña de aplicación o autorización.
+4. Pulsa **Guardar Cuenta de Correo**.
+
+---
+
+## 4. Cómo usar el programa en el día a día
+
+### A. Probar el programa el primer día con datos de ejemplo
+Arriba a la derecha verás el botón **"Cargar Datos de Ejemplo"**. Si lo pulsas, el programa creará varias facturas de prueba y movimientos bancarios para que puedas tocar todos los botones y ver cómo funciona sin miedo.
+
+### B. Revisar las facturas dudosas (`Bandeja de Revisión`)
+- Cuando el programa tiene una seguridad alta (por defecto más del **85%**) y comprueba que `Base + IVA + Recargo - IRPF = Total`, da la factura por buena automáticamente.
+- Si ve que la suma no cuadra o algún dato falta, verás un aviso rojo al lado de **Bandeja de Revisión** en el menú izquierdo.
+- Entra ahí y pulsa **"Corregir / Ver PDF"**: se abrirá una ventana con los datos a la izquierda y el documento PDF original a la derecha. Corrige el número que haga falta y pulsa **"Confirmar y Guardar Factura"**.
+
+### C. Cuadrar las facturas con el banco (`Cuadrar con el Banco`)
+1. Entra en la web de tu banco y descarga los movimientos del mes (en formato **Norma 43**, **Excel `.xlsx`**, **CSV** o **XML**).
+2. En el programa, entra en **Cuadrar con el Banco**, selecciona ese archivo en el cuadro **1. Subir Movimientos del Banco** y pulsa **"Subir Extracto y Cruzar Pagos"**.
+3. El programa hará tres cosas:
+   - **Pagos claros:** Si el importe, la fecha de vencimiento y el proveedor coinciden claramente (incluso cuando un solo cargo del banco junta varias facturas y descuenta un abono), los marcará como **Cuadrado con factura** automáticamente.
+   - **Coincidencias probables:** Si encuentra una factura que parece corresponder pero tiene alguna duda, te mostrará el botón verde **Confirmar** o **No es esta**.
+   - **Unir a mano (remesas especiales, plazos o descuentos):** Si quieres unir tú mismo un cargo del banco con una o varias facturas, pulsa **"Unir a mano"** en la fila del movimiento bancario y marca con un tic las facturas en el cuadro superior derecho. Aunque haya una pequeña diferencia (por ejemplo, por un descuento por pronto pago), el programa te dejará guardarlo anotando la diferencia.
+
+### D. Descargar el Excel para tu gestoría
+En cualquier momento, pulsa el botón **"Descargar Excel para Gestoría"** de la barra superior. Se descargará un archivo Excel con 4 pestañas ya preparadas:
+1. `Facturas Recibidas` (con todas las columnas contables y totales sumados).
+2. `Resumen Mensual y Categorías`.
+3. `Por Proveedor`.
+4. `Conciliación Bancaria`.
+
+---
+
+## 5. Cómo quedan ordenadas las carpetas para tu gestoría
+
+El programa organiza los archivos PDF siguiendo siempre esta estructura fija de carpetas:
+
+```text
+archivo_facturas/
+└── 2026/
+    └── 11-Noviembre/
+        ├── compras_mercancia/
+        │   └── Distribuidora_Farmaceutica_Norte_S_Coop/
+        │       └── 2026-11-02_Distribuidora_Farmaceutica_Norte_S_Coop_FRA-2026-1001.pdf
+        ├── suministros/
+        │   └── Comercializadora_Electrica_Peninsular_S_A/
+        │       └── 2026-11-10_Comercializadora_Electrica_Peninsular_S_A_FRA-2026-2050.pdf
+        └── alquiler/
+            └── Arrendamientos_Urbanos_Goya_S_L/
+                └── 2026-11-01_Arrendamientos_Urbanos_Goya_S_L_ALQ-2026-011.pdf
+```
+
+---
+
+## 6. Seguridad, privacidad y preguntas frecuentes
+
+- **¿Mis contraseñas están seguras?** Sí. Las contraseñas del correo y la clave de Google nunca se guardan en la base de datos ni en archivos de texto: se guardan en el almacén de seguridad del propio sistema operativo (el *Administrador de credenciales de Windows* o el *Llavero de Mac*).
+- **¿Pueden entrar otros ordenadores de la farmacia a ver mis facturas?** No. El programa escucha únicamente en `127.0.0.1` (`localhost`), por lo que solo se puede abrir desde el mismo ordenador donde está funcionando.
+- **¿Qué ocurre si uso la clave gratuita de Google AI Studio?** En el nivel gratuito de Google AI Studio, Google indica en sus condiciones que puede utilizar los datos procesados para mejorar sus modelos. El programa te avisa claramente en la pantalla de configuración y te permite usar una clave de pago confidencial o el modo de lectura local sin Internet.
+- **¿Qué pasa si borro o muevo sin querer un PDF de la carpeta?** Nada grave: el panel principal, las estadísticas y el Excel leen siempre de la base de datos interna (`SQLite`), por lo que tus cuentas nunca se pierden aunque alguien mueva los archivos de la carpeta de la gestoría.
+
+---
+
+## 7. Información técnica para instaladores y desarrolladores
+
+### Requisitos para ejecutar desde código fuente
+- Python 3.11 o superior.
+
+### Instalación y arranque en consola
 
 ```bash
+git clone https://github.com/abel-eiras/archivero.git
+cd archivero
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 .venv/bin/python -m app.main
 ```
 
-Abre en el navegador: **`http://127.0.0.1:8000`**
+La interfaz quedará disponible en `http://127.0.0.1:8000`.
 
-> En la barra superior dispones del botón **"Cargar Muestra (Fase 0)"**, que genera e ingiere automáticamente 7 facturas PDF realistas de proveedores de farmacia (Cofares, Bidafarma, Abono Bidafarma, Iberdrola, Alquiler con IRPF, Asesoría y una factura con descuadre aritmético para probar la Bandeja de Revisión) junto con extractos bancarios en **Norma 43**, **CAMT.053 XML** y **CSV**.
-
-### 2. Ejecutar el procesador de Fase 1 por línea de comandos
-
-```bash
-.venv/bin/python -m app.services.llm_processor ruta/a/factura.pdf
-```
-
-### 3. Ejecutar la suite de tests automatizados
+### Ejecutar los tests automatizados
 
 ```bash
 .venv/bin/python -m pytest -v
 ```
 
-### 4. Empaquetado como ejecutable (Windows / macOS) o Docker
+### Compilar ejecutables independientes (Windows / macOS)
 
-- **Windows**: `packaging\build_windows.bat` (genera `dist\FarmaFacturas.exe`, `dist\FarmaFacturasUpdater.exe` y `dist\SHA256SUMS.txt`).
-- **macOS / Linux**: `bash packaging/build_mac.sh`
-- **Docker**: `docker compose up --build -d`
+- **Windows**:
+  ```bat
+  packaging\build_windows.bat
+  ```
+  Genera `dist\FarmaFacturas.exe`, el actualizador independiente `dist\FarmaFacturasUpdater.exe` y el archivo de firmas `dist\SHA256SUMS.txt`.
+- **macOS / Linux**:
+  ```bash
+  bash packaging/build_mac.sh
+  ```
+- **Docker**:
+  ```bash
+  docker compose up --build -d
+  ```

@@ -73,7 +73,7 @@ class UpdaterService:
 
     def __init__(
         self,
-        github_repo: str = "abeleiras/farmafacturas",
+        github_repo: str = "abel-eiras/archivero",
         github_token: Optional[str] = None,
         current_version: str = APP_VERSION,
         staging_dir: Optional[Path] = None,
