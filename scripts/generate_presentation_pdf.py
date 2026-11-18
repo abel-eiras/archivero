@@ -29,7 +29,7 @@ def build_presentation_pdf(output_path: Path = OUTPUT_PDF) -> Path:
         rightMargin=2 * cm,
         topMargin=2 * cm,
         bottomMargin=2 * cm,
-        title="Dossier de Presentación - Archivero (FarmaFacturas)",
+        title="Dossier de Presentación - Archivero",
         author="Abel Eiras",
     )
 
@@ -70,7 +70,7 @@ def build_presentation_pdf(output_path: Path = OUTPUT_PDF) -> Path:
 
     story = []
 
-    story.append(Paragraph("Archivero (FarmaFacturas)", title_style))
+    story.append(Paragraph("Archivero", title_style))
     story.append(
         Paragraph(
             "Dossier de Presentación y Guía Completa · Gestor Inteligente de Facturas por Correo y Conciliación Bancaria para Farmacias",

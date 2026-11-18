@@ -1,1 +1,1 @@
-"""Rutas y controladores REST de la API de FarmaFacturas."""
+"""Rutas y controladores REST de la API de Archivero."""

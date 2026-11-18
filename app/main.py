@@ -1,4 +1,4 @@
-"""Punto de entrada principal de FarmaFacturas: servidor web local FastAPI + worker de correo."""
+"""Punto de entrada principal de Archivero: servidor web local FastAPI + worker de correo."""
 
 from __future__ import annotations
 

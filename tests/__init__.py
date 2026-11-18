@@ -1,1 +1,1 @@
-"""Suite de pruebas automatizadas de FarmaFacturas."""
+"""Suite de pruebas automatizadas de Archivero."""

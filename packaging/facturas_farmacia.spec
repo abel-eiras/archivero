@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Especificación PyInstaller para generar el ejecutable de FarmaFacturas y el actualizador."""
+"""Especificación PyInstaller para generar el ejecutable de Archivero y el actualizador."""
 
 block_cipher = None
 
@@ -41,7 +41,7 @@ exe_main = EXE(
     a_main.zipfiles,
     a_main.datas,
     [],
-    name='FarmaFacturas',
+    name='Archivero',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -77,7 +77,7 @@ exe_updater = EXE(
     a_updater.zipfiles,
     a_updater.datas,
     [],
-    name='FarmaFacturasUpdater',
+    name='ArchiveroUpdater',
     debug=False,
     strip=False,
     upx=True,

@@ -307,7 +307,7 @@ class GoogleDriveStorage(StorageBackend):
             return folder_id
 
     def _upload_pdf_to_drive(self, pdf_bytes: bytes, filename: str, parent_id: str) -> str:
-        boundary = f"===============farmafacturas_{uuid.uuid4().hex}=="
+        boundary = f"===============archivero_{uuid.uuid4().hex}=="
         metadata = json.dumps({"name": filename, "parents": [parent_id]}).encode("utf-8")
 
         body = (

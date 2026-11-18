@@ -1,5 +1,5 @@
 # Dossier de Presentación y Guía Completa del Proyecto
-## Archivero (FarmaFacturas) — Gestión Inteligente de Facturas y Conciliación Bancaria para Farmacias
+## Archivero — Gestión Inteligente de Facturas y Conciliación Bancaria para Farmacias
 
 **Repositorio oficial:** [https://github.com/abel-eiras/archivero](https://github.com/abel-eiras/archivero)  
 **Versión:** 0.1.0  
@@ -18,7 +18,7 @@ Hasta ahora, el titular o el personal de la farmacia tenía que:
 3. Teclear importes en una hoja de cálculo para saber cuánto se ha gastado en el mes.
 4. Puntear a mano el extracto del banco contra las facturas para descubrir si una remesa agrupaba tres facturas y descontaba un abono.
 
-### La solución: Archivero (FarmaFacturas)
+### La solución: Archivero
 **Archivero** es una aplicación local instalada en el propio ordenador de la farmacia que automatiza todo este flujo de principio a fin, **sin cuotas de servidores externos, sin ceder las claves del banco y sin requerir conocimientos informáticos**.
 
 ```mermaid

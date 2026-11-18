@@ -132,8 +132,8 @@ def test_updater_sha256_integrity_and_atomic_replacement(tmp_path: Path):
     assert is_newer_version("v0.2.0", "0.1.0") is True
     assert is_newer_version("0.1.0", "0.1.0") is False
 
-    new_bin = tmp_path / "FarmaFacturas_new.exe"
-    old_bin = tmp_path / "FarmaFacturas.exe"
+    new_bin = tmp_path / "Archivero_new.exe"
+    old_bin = tmp_path / "Archivero.exe"
     new_content = b"NEW_BINARY_PAYLOAD_V020"
     old_content = b"OLD_BINARY_PAYLOAD_V010"
     new_bin.write_bytes(new_content)
@@ -142,8 +142,8 @@ def test_updater_sha256_integrity_and_atomic_replacement(tmp_path: Path):
     good_sha256 = hashlib.sha256(new_content).hexdigest()
     bad_sha256 = "0" * 64
 
-    release_notes = f"Release v0.2.0\n\nSHA256:\n{good_sha256}  FarmaFacturas_new.exe\n"
-    extracted = extract_sha256_from_release_body(release_notes, "FarmaFacturas_new.exe")
+    release_notes = f"Release v0.2.0\n\nSHA256:\n{good_sha256}  Archivero_new.exe\n"
+    extracted = extract_sha256_from_release_body(release_notes, "Archivero_new.exe")
     assert extracted == good_sha256
     assert verify_sha256_checksum(new_bin, good_sha256) is True
     assert verify_sha256_checksum(new_bin, bad_sha256) is False

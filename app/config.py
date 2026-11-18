@@ -6,21 +6,21 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
-APP_NAME = "FarmaFacturas"
+APP_NAME = "Archivero"
 APP_VERSION = "0.1.0"
-KEYRING_SERVICE_NAME = "FarmaFacturas_Local"
+KEYRING_SERVICE_NAME = "Archivero_Local"
 
 # Directorios base por defecto (cada instalación es una isla)
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DATA_DIR = Path(os.environ.get("FARMAFACTURAS_DATA_DIR", BASE_DIR / "data"))
-DEFAULT_DB_PATH = Path(os.environ.get("FARMAFACTURAS_DB_PATH", DEFAULT_DATA_DIR / "facturas.sqlite"))
-DEFAULT_ARCHIVE_DIR = Path(os.environ.get("FARMAFACTURAS_ARCHIVE_DIR", BASE_DIR / "archivo_facturas"))
-DEFAULT_BACKUP_DIR = Path(os.environ.get("FARMAFACTURAS_BACKUP_DIR", DEFAULT_DATA_DIR / "backups"))
-DEFAULT_STAGING_DIR = Path(os.environ.get("FARMAFACTURAS_STAGING_DIR", DEFAULT_DATA_DIR / ".tmp_staging"))
+DEFAULT_DATA_DIR = Path(os.environ.get("ARCHIVERO_DATA_DIR", BASE_DIR / "data"))
+DEFAULT_DB_PATH = Path(os.environ.get("ARCHIVERO_DB_PATH", DEFAULT_DATA_DIR / "facturas.sqlite"))
+DEFAULT_ARCHIVE_DIR = Path(os.environ.get("ARCHIVERO_ARCHIVE_DIR", BASE_DIR / "archivo_facturas"))
+DEFAULT_BACKUP_DIR = Path(os.environ.get("ARCHIVERO_BACKUP_DIR", DEFAULT_DATA_DIR / "backups"))
+DEFAULT_STAGING_DIR = Path(os.environ.get("ARCHIVERO_STAGING_DIR", DEFAULT_DATA_DIR / ".tmp_staging"))
 
 # Servidor local: estrictamente localhost por seguridad (Sección 3 y 10)
-DEFAULT_HOST = os.environ.get("FARMAFACTURAS_HOST", "127.0.0.1")
-DEFAULT_PORT = int(os.environ.get("FARMAFACTURAS_PORT", "8000"))
+DEFAULT_HOST = os.environ.get("ARCHIVERO_HOST", "127.0.0.1")
+DEFAULT_PORT = int(os.environ.get("ARCHIVERO_PORT", "8000"))
 
 # Tipos de documento iniciales (Sección 5)
 TIPOS_DOCUMENTO: Dict[str, str] = {

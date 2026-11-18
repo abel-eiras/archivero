@@ -1,4 +1,4 @@
-/* Lógica de cliente de FarmaFacturas (100% local, pensada para uso sencillo en farmacia) */
+/* Lógica de cliente de Archivero (100% local, pensada para uso sencillo en farmacia) */
 
 const state = {
   categorias: [],
@@ -75,7 +75,7 @@ function setupTabs() {
       panels.forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(target).classList.add("active");
-      document.getElementById("current-screen-title").textContent = titleMap[target] || "FarmaFacturas";
+      document.getElementById("current-screen-title").textContent = titleMap[target] || "Archivero";
 
       if (target === "tab-dashboard") loadDashboard();
       if (target === "tab-revision") loadReviewInbox();

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Actualizador independiente de FarmaFacturas (Sección 3 y 11).
+Actualizador independiente de Archivero (Sección 3 y 11).
 
 En Windows un ejecutable no puede sobrescribirse mientras está en ejecución.
 Este programa independiente:
@@ -115,7 +115,7 @@ def apply_update(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Actualizador independiente de FarmaFacturas")
+    parser = argparse.ArgumentParser(description="Actualizador independiente de Archivero")
     parser.add_argument("--source", required=True, help="Ruta del nuevo ejecutable descargado")
     parser.add_argument("--target", required=True, help="Ruta del ejecutable actual a reemplazar")
     parser.add_argument("--sha256", required=True, help="Hash SHA-256 esperado (64 caracteres hex)")

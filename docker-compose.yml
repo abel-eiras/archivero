@@ -1,12 +1,12 @@
 services:
-  farmafacturas:
+  archivero:
     build: .
-    container_name: farmafacturas
+    container_name: archivero
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      - FARMAFACTURAS_HOST=0.0.0.0
-      - FARMAFACTURAS_PORT=8000
+      - ARCHIVERO_HOST=0.0.0.0
+      - ARCHIVERO_PORT=8000
     volumes:
       - ./data:/app/data
       - ./archivo_facturas:/app/archivo_facturas

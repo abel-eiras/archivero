@@ -86,7 +86,7 @@ class UpdaterService:
     def _headers(self) -> Dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": f"FarmaFacturas/{self.current_version}",
+            "User-Agent": f"Archivero/{self.current_version}",
         }
         if self.github_token:
             headers["Authorization"] = f"Bearer {self.github_token}"

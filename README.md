@@ -1,4 +1,4 @@
-# Archivero (FarmaFacturas) — Gestor Automático de Facturas y Banco para Farmacias
+# Archivero — Gestor Automático de Facturas y Banco para Farmacias
 
 Repositorio oficial: **[https://github.com/abel-eiras/archivero](https://github.com/abel-eiras/archivero)**
 
@@ -39,8 +39,8 @@ Repositorio oficial: **[https://github.com/abel-eiras/archivero](https://github.
 
 1. Entra en la página de descargas del proyecto: **[https://github.com/abel-eiras/archivero/releases](https://github.com/abel-eiras/archivero/releases)**.
 2. En la versión más reciente (arriba del todo), haz clic en el archivo para tu ordenador:
-   - En **Windows**: descarga `FarmaFacturas.exe`.
-   - En **Mac**: descarga el archivo para Mac (`FarmaFacturas-Mac`).
+   - En **Windows**: descarga `Archivero.exe`.
+   - En **Mac**: descarga el archivo para Mac (`Archivero-Mac`).
 3. Haz doble clic sobre el programa descargado.
 4. Abre tu navegador de Internet habitual (Chrome, Edge, Safari) y entra en la dirección:
    👉 **`http://127.0.0.1:8000`**
@@ -192,7 +192,7 @@ La interfaz quedará disponible en `http://127.0.0.1:8000`.
   ```bat
   packaging\build_windows.bat
   ```
-  Genera `dist\FarmaFacturas.exe`, el actualizador independiente `dist\FarmaFacturasUpdater.exe` y el archivo de firmas `dist\SHA256SUMS.txt`.
+  Genera `dist\Archivero.exe`, el actualizador independiente `dist\ArchiveroUpdater.exe` y el archivo de firmas `dist\SHA256SUMS.txt`.
 - **macOS / Linux**:
   ```bash
   bash packaging/build_mac.sh

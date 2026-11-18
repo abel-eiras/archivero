@@ -1,1 +1,1 @@
-"""Servicios de negocio de FarmaFacturas."""
+"""Servicios de negocio de Archivero."""

@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "farmafacturas"
+name = "archivero"
 version = "0.1.0"
 description = "Gestor local de facturas por correo y conciliación bancaria para farmacias"
 readme = "README.md"
@@ -33,7 +33,7 @@ dev = [
 ]
 
 [project.scripts]
-farmafacturas = "app.main:run_server"
+archivero = "app.main:run_server"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

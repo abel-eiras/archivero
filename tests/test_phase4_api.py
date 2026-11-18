@@ -23,7 +23,7 @@ def test_full_web_api_and_phase0_demo_flow(tmp_path: Path):
     assert r_health.status_code == 200
     r_index = client.get("/")
     assert r_index.status_code == 200
-    assert "FarmaFacturas" in r_index.text
+    assert "Archivero" in r_index.text
 
     # 2. Cargar datos de muestra de Fase 0 desde el endpoint
     r_demo = client.post("/api/demo/load-sample-data")

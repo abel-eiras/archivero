@@ -491,7 +491,7 @@ class MailPollerService:
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._worker_loop,
-            name="FarmaFacturas-MailPoller",
+            name="Archivero-MailPoller",
             daemon=True,
         )
         self._thread.start()
