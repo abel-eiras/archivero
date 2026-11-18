@@ -10,6 +10,7 @@ a_main = Analysis(
     datas=[
         ('../app/templates', 'app/templates'),
         ('../app/static', 'app/static'),
+        ('../docs', 'docs'),
     ],
     hiddenimports=[
         'uvicorn.logging',

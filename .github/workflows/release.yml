@@ -1,0 +1,121 @@
+name: Compilar y Publicar Ejecutables en Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release donde subir los ejecutables (ej. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Compilar Archivero.exe (Windows 64-bit)
+    runs-on: windows-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias y PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller -r requirements.txt
+
+      - name: Compilar Archivero.exe y ArchiveroUpdater.exe
+        run: |
+          pyinstaller --clean --noconfirm packaging/facturas_farmacia.spec
+
+      - name: Preparar paquete limpio para usuario final (sin código fuente)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release_pkg | Out-Null
+          Copy-Item dist/Archivero.exe release_pkg/Archivero.exe
+          Copy-Item dist/ArchiveroUpdater.exe release_pkg/ArchiveroUpdater.exe
+          Copy-Item docs/Dossier_Presentacion_Archivero.pdf release_pkg/Dossier_Presentacion_Archivero.pdf
+          @"
+          ==================================================================
+          ARCHIVERO - GESTOR DE FACTURAS Y BANCO PARA FARMACIAS
+          ==================================================================
+
+          COMO EMPEZAR (SIN INSTALACION COMPLICADA):
+
+          1. Haz doble clic sobre el programa "Archivero.exe".
+          2. Se abrira automaticamente tu navegador en:
+             http://127.0.0.1:8000
+          3. Dentro del programa, ve a "Configuracion Facil" o a "Ayuda Paso a Paso".
+
+          Nota: "Archivero.exe" funciona por si solo. El archivo "ArchiveroUpdater.exe"
+          sirve unicamente para instalar actualizaciones automaticas en el futuro.
+          "@ | Set-Content -Path release_pkg/LEEME_INSTRUCCIONES.txt -Encoding UTF8
+
+          Compress-Archive -Path release_pkg/* -DestinationPath dist/Archivero-Windows.zip -Force
+
+          $hExe = (Get-FileHash dist/Archivero.exe -Algorithm SHA256).Hash.ToLower()
+          $hUpd = (Get-FileHash dist/ArchiveroUpdater.exe -Algorithm SHA256).Hash.ToLower()
+          $hZip = (Get-FileHash dist/Archivero-Windows.zip -Algorithm SHA256).Hash.ToLower()
+          $hPdf = (Get-FileHash docs/Dossier_Presentacion_Archivero.pdf -Algorithm SHA256).Hash.ToLower()
+          @(
+            "$hExe  Archivero.exe",
+            "$hZip  Archivero-Windows.zip",
+            "$hUpd  ArchiveroUpdater.exe",
+            "$hPdf  Dossier_Presentacion_Archivero.pdf"
+          ) | Set-Content -Path dist/SHA256SUMS.txt -Encoding UTF8
+
+      - name: Subir Archivero.exe y Archivero-Windows.zip a la Release de GitHub
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.event.inputs.tag }}"
+          if (-not $tag) {
+            $tag = "${{ github.ref_name }}"
+          }
+          gh release upload $tag dist/Archivero.exe dist/Archivero-Windows.zip dist/ArchiveroUpdater.exe dist/SHA256SUMS.txt --clobber
+
+  build-macos:
+    name: Compilar Archivero para Mac (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias y PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller -r requirements.txt
+
+      - name: Compilar ejecutable Mac y empaquetar ZIP limpio
+        run: |
+          pyinstaller --clean --noconfirm packaging/facturas_farmacia.spec
+          mkdir -p release_mac
+          cp dist/Archivero release_mac/Archivero
+          cp dist/ArchiveroUpdater release_mac/ArchiveroUpdater
+          cp docs/Dossier_Presentacion_Archivero.pdf release_mac/Dossier_Presentacion_Archivero.pdf
+          cd release_mac
+          zip -r ../dist/Archivero-Mac.zip .
+
+      - name: Subir Archivero-Mac.zip a la Release de GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          gh release upload "$TAG" dist/Archivero-Mac.zip --clobber

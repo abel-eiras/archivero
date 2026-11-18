@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import logging
+import os
 from pathlib import Path
+import threading
 from typing import AsyncIterator, Optional
+import webbrowser
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -17,6 +20,7 @@ from app.api.routes import router as api_router
 from app.config import (
     APP_NAME,
     APP_VERSION,
+    BUNDLE_DIR,
     DEFAULT_BACKUP_DIR,
     DEFAULT_DB_PATH,
     DEFAULT_HOST,
@@ -32,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = BUNDLE_DIR / "app"
 TEMPLATES_DIR = APP_DIR / "templates"
 STATIC_DIR = APP_DIR / "static"
 
@@ -85,14 +89,14 @@ def create_app(
 
     @app.get("/presentacion", response_class=HTMLResponse)
     def presentation_page() -> HTMLResponse:
-        pres_path = APP_DIR.parent / "docs" / "presentacion_proyecto.html"
+        pres_path = BUNDLE_DIR / "docs" / "presentacion_proyecto.html"
         if pres_path.is_file():
             return HTMLResponse(content=pres_path.read_text(encoding="utf-8"))
         return HTMLResponse(content="<h1>Dossier no encontrado</h1>", status_code=404)
 
     @app.get("/presentacion/pdf")
     def presentation_pdf() -> FileResponse:
-        pdf_path = APP_DIR.parent / "docs" / "Dossier_Presentacion_Archivero.pdf"
+        pdf_path = BUNDLE_DIR / "docs" / "Dossier_Presentacion_Archivero.pdf"
         return FileResponse(
             path=str(pdf_path),
             media_type="application/pdf",
@@ -110,9 +114,14 @@ app = create_app(start_background_poller=False)
 
 
 def run_server() -> None:
-    """Arranca el servidor web escuchando exclusivamente en localhost (127.0.0.1)."""
+    """Arranca el servidor web escuchando exclusivamente en localhost (127.0.0.1) y abre el navegador."""
     production_app = create_app(start_background_poller=True)
-    logger.info("Iniciando %s v%s en http://%s:%d", APP_NAME, APP_VERSION, DEFAULT_HOST, DEFAULT_PORT)
+    url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+    logger.info("Iniciando %s v%s en %s", APP_NAME, APP_VERSION, url)
+
+    if os.environ.get("ARCHIVERO_NO_BROWSER", "0") != "1":
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+
     uvicorn.run(
         production_app,
         host=DEFAULT_HOST,

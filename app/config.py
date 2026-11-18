@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 from typing import Dict, List
 
 APP_NAME = "Archivero"
 APP_VERSION = "0.1.0"
 KEYRING_SERVICE_NAME = "Archivero_Local"
 
-# Directorios base por defecto (cada instalación es una isla)
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Cuando se ejecuta como .exe empaquetado (PyInstaller), los datos persistentes
+# se guardan junto al ejecutable y los recursos estáticos se leen de _MEIPASS.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    BUNDLE_DIR = BASE_DIR
+
 DEFAULT_DATA_DIR = Path(os.environ.get("ARCHIVERO_DATA_DIR", BASE_DIR / "data"))
 DEFAULT_DB_PATH = Path(os.environ.get("ARCHIVERO_DB_PATH", DEFAULT_DATA_DIR / "facturas.sqlite"))
 DEFAULT_ARCHIVE_DIR = Path(os.environ.get("ARCHIVERO_ARCHIVE_DIR", BASE_DIR / "archivo_facturas"))
