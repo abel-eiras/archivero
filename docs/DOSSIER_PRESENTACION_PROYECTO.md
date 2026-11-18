@@ -2,7 +2,7 @@
 ## Archivero — Gestión Inteligente de Facturas y Conciliación Bancaria para Farmacias
 
 **Repositorio oficial:** [https://github.com/abel-eiras/archivero](https://github.com/abel-eiras/archivero)  
-**Versión:** 0.1.0  
+**Versión:** 0.1.0 · **Licencia:** MIT  
 **Destinatarios:** Titulares de oficina de farmacia, personal de administración, gestorías farmacéuticas y colaboradores del proyecto.
 
 ---

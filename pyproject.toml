@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Gestor local de facturas por correo y conciliación bancaria para farmacias"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "Proprietary"}
+license = {text = "MIT"}
 authors = [
     {name = "Abel Eiras", email = "abel.eiras@hotmail.com"}
 ]

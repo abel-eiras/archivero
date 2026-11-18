@@ -1,6 +1,6 @@
 # Archivero — Gestor Automático de Facturas y Banco para Farmacias
 
-Repositorio oficial: **[https://github.com/abel-eiras/archivero](https://github.com/abel-eiras/archivero)**
+Repositorio oficial: **[https://github.com/abel-eiras/archivero](https://github.com/abel-eiras/archivero)** · **Licencia:** [MIT](LICENSE)
 
 **Archivero** es un programa sencillo que se instala en el ordenador de tu farmacia. Se encarga de vigilar tu correo electrónico, detectar las facturas que te envían tus proveedores en PDF, leer sus datos e importes automáticamente, guardarlas ordenadas por carpetas para tu gestoría y comprobar cuáles están ya pagadas en el banco.
 
@@ -201,3 +201,9 @@ La interfaz quedará disponible en `http://127.0.0.1:8000`.
   ```bash
   docker compose up --build -d
   ```
+
+---
+
+## 8. Licencia
+
+Este proyecto se distribuye como software libre bajo la **Licencia MIT**. Consulta el archivo [LICENSE](LICENSE) para ver el texto completo.
