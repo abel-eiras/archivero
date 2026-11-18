@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dossier de Presentación — Archivero (FarmaFacturas)</title>
+  <style>
+    :root {
+      --primary: #0f766e;
+      --primary-dark: #115e59;
+      --accent: #10b981;
+      --bg: #f1f5f9;
+      --paper: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --border: #e2e8f0;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+
+    .toolbar {
+      max-width: 980px;
+      margin: 0 auto 1.25rem auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 0.85rem 1.25rem;
+      border-radius: 10px;
+    }
+
+    .toolbar a, .toolbar button {
+      background: var(--accent);
+      color: #064e3b;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 7px;
+      font-weight: 700;
+      font-size: 0.88rem;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .document {
+      max-width: 980px;
+      margin: 0 auto;
+      background: var(--paper);
+      border-radius: 14px;
+      box-shadow: 0 15px 35px rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+    }
+
+    /* Portada */
+    .cover {
+      background: linear-gradient(135deg, #0f172a 0%, #0f766e 100%);
+      color: #ffffff;
+      padding: 3.5rem 3rem;
+      position: relative;
+    }
+
+    .cover-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(16, 185, 129, 0.2);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #a7f3d0;
+      font-weight: 700;
+      font-size: 0.82rem;
+      padding: 0.3rem 0.8rem;
+      border-radius: 999px;
+      margin-bottom: 1.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .cover h1 {
+      font-size: 2.35rem;
+      line-height: 1.2;
+      font-weight: 800;
+      margin-bottom: 0.85rem;
+    }
+
+    .cover p.lead {
+      font-size: 1.12rem;
+      color: #e2e8f0;
+      max-width: 760px;
+      margin-bottom: 1.75rem;
+    }
+
+    .cover-meta {
+      display: flex;
+      gap: 2rem;
+      flex-wrap: wrap;
+      font-size: 0.88rem;
+      color: #cbd5e1;
+      border-top: 1px solid rgba(255, 255, 255, 0.15);
+      padding-top: 1.25rem;
+    }
+
+    /* Secciones */
+    .section {
+      padding: 2.5rem 3rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-tag {
+      color: var(--primary);
+      font-weight: 800;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.35rem;
+    }
+
+    .section h2 {
+      font-size: 1.55rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+      color: #0f172a;
+    }
+
+    .section h3 {
+      font-size: 1.12rem;
+      font-weight: 700;
+      margin: 1.25rem 0 0.45rem 0;
+      color: #1e293b;
+    }
+
+    .section p {
+      color: #334155;
+      margin-bottom: 0.85rem;
+      font-size: 0.96rem;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 1.25rem;
+      margin-top: 1rem;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .feature-box {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.2rem;
+      background: #f8fafc;
+    }
+
+    .feature-box h4 {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--primary-dark);
+      margin-bottom: 0.4rem;
+    }
+
+    .feature-box p {
+      font-size: 0.88rem;
+      margin-bottom: 0;
+    }
+
+    /* Flujo en pasos */
+    .flow-steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.75rem;
+      margin: 1.25rem 0;
+    }
+
+    .flow-step {
+      background: #f0fdfa;
+      border: 1px solid #99f6e4;
+      border-radius: 10px;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .flow-step .num {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--primary);
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 0.4rem;
+    }
+
+    .flow-step h5 {
+      font-size: 0.9rem;
+      margin-bottom: 0.25rem;
+      color: #0f172a;
+    }
+
+    .flow-step p {
+      font-size: 0.78rem;
+      color: #475569;
+      margin-bottom: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.88rem;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.65rem 0.8rem;
+      text-align: left;
+    }
+
+    th {
+      background: #f1f5f9;
+      font-weight: 700;
+      color: #1e293b;
+    }
+
+    .callout {
+      background: #fffbeb;
+      border-left: 4px solid #f59e0b;
+      padding: 1rem 1.2rem;
+      border-radius: 6px;
+      margin: 1rem 0;
+      font-size: 0.9rem;
+      color: #78350f;
+    }
+
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      overflow-x: auto;
+      margin: 0.85rem 0;
+    }
+
+    @media print {
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .toolbar {
+        display: none;
+      }
+      .document {
+        box-shadow: none;
+        border-radius: 0;
+      }
+      .section {
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div><strong>Dossier de Presentación del Proyecto</strong> · Archivero (FarmaFacturas)</div>
+    <div style="display:flex; gap:0.6rem;">
+      <a href="/">← Volver a la Aplicación</a>
+      <button onclick="window.print()">Imprimir / Guardar en PDF</button>
+    </div>
+  </div>
+
+  <article class="document">
+    <header class="cover">
+      <div class="cover-badge">+ Dossier de Producto y Arquitectura</div>
+      <h1>Archivero (FarmaFacturas)</h1>
+      <p class="lead">
+        Gestor local e inteligente de facturas por correo electrónico, archivo automático para gestoría y conciliación bancaria diseñado específicamente para oficinas de farmacia.
+      </p>
+      <div class="cover-meta">
+        <div><strong>Repositorio:</strong> github.com/abel-eiras/archivero</div>
+        <div><strong>Entorno:</strong> Windows, macOS y Linux (100% Localhost)</div>
+        <div><strong>Perfil de usuario:</strong> Farmacéuticos sin conocimientos técnicos</div>
+      </div>
+    </header>
+
+    <!-- 1. Problema y Propuesta de Valor -->
+    <section class="section">
+      <div class="section-tag">01 · Visión y Propuesta de Valor</div>
+      <h2>Del caos de correos y recibos al control contable en un clic</h2>
+      <p>
+        Una oficina de farmacia recibe cada mes decenas de facturas en PDF desde múltiples buzones y remitentes: distribuidoras farmacéuticas, laboratorios, suministros (luz, agua, fibra), alquiler del local con retención de IRPF, seguros, gestoría y abonos por devoluciones. Descargarlas una por una, renombrarlas, ordenarlas en carpetas y puntearlas con el extracto del banco consume horas cada semana.
+      </p>
+      <p>
+        <strong>Archivero</strong> instala en el ordenador de la farmacia un asistente silencioso que vigila el correo, lee cada factura con Inteligencia Artificial, verifica que los importes e impuestos cuadren al céntimo, ordena los PDFs para la gestoría y cruza las facturas con los movimientos del banco.
+      </p>
+
+      <div class="flow-steps">
+        <div class="flow-step">
+          <div class="num">1</div>
+          <h5>Vigila el Correo</h5>
+          <p>Detecta facturas nuevas en uno o varios buzones sin borrar ni alterar tus correos.</p>
+        </div>
+        <div class="flow-step">
+          <div class="num">2</div>
+          <h5>Extrae y Valida</h5>
+          <p>Lee proveedor, NIF, fechas, Base, IVA, Recargo e IRPF y comprueba la suma.</p>
+        </div>
+        <div class="flow-step">
+          <div class="num">3</div>
+          <h5>Archiva el PDF</h5>
+          <p>Ordena cada PDF por Año / Mes / Categoría / Proveedor para la gestoría.</p>
+        </div>
+        <div class="flow-step">
+          <div class="num">4</div>
+          <h5>Cruza con el Banco</h5>
+          <p>Concilia recibos sueltos, remesas agrupadas y abonos con Norma 43, XML o Excel.</p>
+        </div>
+        <div class="flow-step">
+          <div class="num">5</div>
+          <h5>Exporta a Excel</h5>
+          <p>Genera el libro contable en Excel (.xlsx) con 4 pestañas listas para enviar.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Principios de Diseño -->
+    <section class="section">
+      <div class="section-tag">02 · Principios Fundamentales</div>
+      <h2>Por qué es seguro, robusto y fácil para cualquier farmacia</h2>
+      <div class="grid-2">
+        <div class="feature-box">
+          <h4>1. Cada farmacia es una isla privada</h4>
+          <p>No depende de servidores centrales ni cuotas mensuales SaaS. La base de datos, las carpetas y las claves viven exclusivamente en el ordenador de la farmacia.</p>
+        </div>
+        <div class="feature-box">
+          <h4>2. La carpeta de la gestoría nunca rompe el programa</h4>
+          <p>SQLite es la única fuente de verdad. Si alguien en la farmacia o en la gestoría mueve o renombra un PDF archivado, las estadísticas y el Excel siguen funcionando sin errores.</p>
+        </div>
+        <div class="feature-box">
+          <h4>3. Supervisión humana cuando hay dudas</h4>
+          <p>Si una factura viene borrosa o la suma de Base + IVA + Recargo - IRPF no coincide con el Total, queda en la <em>Bandeja de Revisión</em> hasta que el farmacéutico la confirma.</p>
+        </div>
+        <div class="feature-box">
+          <h4>4. Cero pérdida de facturas ni de contraseñas</h4>
+          <p>Escritura en carpeta temporal con reintentos ante fallos de disco, copia de seguridad automática antes de cada actualización y contraseñas guardadas en el llavero seguro de Windows/Mac.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Pantallas de la aplicación -->
+    <section class="section">
+      <div class="section-tag">03 · Recorrido por la Aplicación</div>
+      <h2>Seis pantallas diseñadas en lenguaje claro y sin tecnicismos</h2>
+      <div class="grid-3">
+        <div class="feature-box">
+          <h4>Resumen General</h4>
+          <p>Gasto por mes, por tipo de compra y por proveedor, alertas de vencimientos próximos (15 días) y facturas pendientes de pago.</p>
+        </div>
+        <div class="feature-box">
+          <h4>Bandeja de Revisión</h4>
+          <p>Visor dividido con el formulario a la izquierda, comprobador de suma en vivo y el PDF original a la derecha para corregir en segundos.</p>
+        </div>
+        <div class="feature-box">
+          <h4>Todas las Facturas</h4>
+          <p>Buscador instantáneo por proveedor, NIF o número de factura, filtros por mes/estado y apertura del PDF en un clic.</p>
+        </div>
+        <div class="feature-box">
+          <h4>Cuadrar con el Banco</h4>
+          <p>Importación de Norma 43, CAMT.053 XML y Excel/CSV. Emparejamiento automático de remesas y unión manual muchos-a-muchos.</p>
+        </div>
+        <div class="feature-box">
+          <h4>Configuración Fácil</h4>
+          <p>Adaptada a usuarios sin conocimientos informáticos, con selector de IA, botón de prueba de clave en vivo y reglas automáticas.</p>
+        </div>
+        <div class="feature-box">
+          <h4>Ayuda Paso a Paso</h4>
+          <p>Manual integrado dentro del propio programa con guía de configuración en 5 minutos y respuestas a preguntas frecuentes.</p>
+        </div>
+      </div>
+
+      <h3>Estructura automática de carpetas para la gestoría</h3>
+      <pre>archivo_facturas/
+└── 2026/
+    └── 11-Noviembre/
+        ├── compras_mercancia/
+        │   └── Distribuidora_Farmaceutica_Norte_S_Coop/
+        │       └── 2026-11-02_Distribuidora_Farmaceutica_Norte_S_Coop_FRA-2026-1001.pdf
+        ├── suministros/
+        │   └── Comercializadora_Electrica_Peninsular_S_A/
+        │       └── 2026-11-10_Comercializadora_Electrica_Peninsular_S_A_FRA-2026-2050.pdf
+        └── alquiler/
+            └── Arrendamientos_Urbanos_Goya_S_L/
+                └── 2026-11-01_Arrendamientos_Urbanos_Goya_S_L_ALQ-2026-011.pdf</pre>
+    </section>
+
+    <!-- 4. Inteligencia Artificial y Costes -->
+    <section class="section">
+      <div class="section-tag">04 · Lectura con Inteligencia Artificial</div>
+      <h2>Comparativa de proveedores y por qué no requiere suscripciones mensuales</h2>
+      <p>
+        A diferencia de las suscripciones web de 20 €/mes (<em>ChatGPT Plus</em>, <em>Claude Pro</em> o <em>Gemini Advanced</em>, que solo sirven para chatear a mano en el navegador), <strong>Archivero</strong> se conecta mediante <strong>Clave API</strong> o modo local, lo que evita cualquier cuota mensual fija:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Opción disponible en el programa</th>
+            <th>Coste para la farmacia</th>
+            <th>Privacidad de las facturas</th>
+            <th>Facturas escaneadas</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Google AI Studio (Nivel Gratuito)</strong></td>
+            <td><strong>0,00 € (Gratis)</strong></td>
+            <td>Google puede usar textos para mejorar modelos</td>
+            <td>Sí (Visión directa PDF)</td>
+          </tr>
+          <tr>
+            <td><strong>Google AI Studio (Con facturación activada)</strong></td>
+            <td><strong>~0,02 € cada 100 facturas</strong></td>
+            <td><strong>100% Privado por contrato</strong></td>
+            <td>Sí (Visión directa PDF)</td>
+          </tr>
+          <tr>
+            <td><strong>OpenAI API (gpt-4o-mini)</strong></td>
+            <td><strong>~0,03 € cada 100 facturas</strong></td>
+            <td><strong>100% Privado por contrato</strong></td>
+            <td>Sí (con texto / OCR)</td>
+          </tr>
+          <tr>
+            <td><strong>Anthropic Claude API</strong></td>
+            <td><strong>~0,05 € cada 100 facturas</strong></td>
+            <td><strong>100% Privado por contrato</strong></td>
+            <td>Sí (Lectura nativa PDF)</td>
+          </tr>
+          <tr>
+            <td><strong>Modo básico sin Internet / Ollama local</strong></td>
+            <td><strong>0,00 € (Gratis)</strong></td>
+            <td><strong>100% sin salir del ordenador</strong></td>
+            <td>PDFs digitales / Local</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 5. Conciliación Bancaria -->
+    <section class="section">
+      <div class="section-tag">05 · Conciliación Bancaria Especializada</div>
+      <h2>Resolución de casos reales de farmacia: remesas, abonos y plazos</h2>
+      <div class="grid-2">
+        <div class="feature-box">
+          <h4>Pagos agrupados y abonos que restan</h4>
+          <p>
+            Muy habitual en distribución farmacéutica: el banco carga un único recibo de <strong>-783,75 €</strong> que liquida una factura de <strong>888,25 €</strong> menos un abono por devolución de <strong>-104,50 €</strong>. El conciliador detecta el conjunto automáticamente y marca ambos documentos como pagados.
+          </p>
+        </div>
+        <div class="feature-box">
+          <h4>Pagos en varios plazos y descuentos</h4>
+          <p>
+            Su relación muchos-a-muchos en base de datos permite imputar varios movimientos bancarios a una misma factura (plazos) o guardar conciliaciones con diferencia pendiente cuando existe un descuento por pronto pago.
+          </p>
+        </div>
+      </div>
+    </section>
+  </article>
+</body>
+</html>

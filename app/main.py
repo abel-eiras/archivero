@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -81,6 +81,22 @@ def create_app(
             request=request,
             name="index.html",
             context={"app_name": APP_NAME, "app_version": APP_VERSION},
+        )
+
+    @app.get("/presentacion", response_class=HTMLResponse)
+    def presentation_page() -> HTMLResponse:
+        pres_path = APP_DIR.parent / "docs" / "presentacion_proyecto.html"
+        if pres_path.is_file():
+            return HTMLResponse(content=pres_path.read_text(encoding="utf-8"))
+        return HTMLResponse(content="<h1>Dossier no encontrado</h1>", status_code=404)
+
+    @app.get("/presentacion/pdf")
+    def presentation_pdf() -> FileResponse:
+        pdf_path = APP_DIR.parent / "docs" / "Dossier_Presentacion_Archivero.pdf"
+        return FileResponse(
+            path=str(pdf_path),
+            media_type="application/pdf",
+            filename="Dossier_Presentacion_Archivero.pdf",
         )
 
     @app.get("/health")
