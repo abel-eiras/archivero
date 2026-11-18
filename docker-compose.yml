@@ -1,0 +1,13 @@
+services:
+  farmafacturas:
+    build: .
+    container_name: farmafacturas
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - FARMAFACTURAS_HOST=0.0.0.0
+      - FARMAFACTURAS_PORT=8000
+    volumes:
+      - ./data:/app/data
+      - ./archivo_facturas:/app/archivo_facturas
+    restart: unless-stopped
