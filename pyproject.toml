@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "farmafacturas"
+version = "0.1.0"
+description = "Gestor local de facturas por correo y conciliación bancaria para farmacias"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Abel Eiras", email = "abel.eiras@hotmail.com"}
+]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pydantic>=2.7.0",
+    "pypdf>=4.0.0",
+    "openpyxl>=3.1.0",
+    "xlsxwriter>=3.1.0",
+    "reportlab>=4.0.0",
+    "keyring>=24.0.0",
+    "cryptography>=42.0.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    "jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+farmafacturas = "app.main:run_server"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

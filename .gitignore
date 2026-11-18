@@ -1,0 +1,34 @@
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Datos locales de la aplicación (cada instalación es una isla)
+data/
+archivo_facturas/
+backups/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+.vault_key
+.credentials.enc
+
+# Empaquetado y distribución
+build/
+dist/
+*.egg-info/
+
+# Archivos de sistema e IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
