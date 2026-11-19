@@ -74,3 +74,30 @@ def test_full_web_api_and_phase0_demo_flow(tmp_path: Path):
     assert r_xlsx.status_code == 200
     assert "spreadsheetml" in r_xlsx.headers["content-type"]
     assert len(r_xlsx.content) > 1000
+
+
+def test_windows_pyinstaller_null_stdout_stderr_handling(monkeypatch):
+    """
+    Verifica que cuando sys.stdout y sys.stderr son None (como en Windows con PyInstaller console=False),
+    _ensure_standard_streams() los redirige a un stream válido con .isatty() y uvicorn.Config no lanza AttributeError.
+    """
+    import sys
+    import uvicorn
+    from app.main import _ensure_standard_streams, app
+
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
+    try:
+        sys.stdout = None
+        sys.stderr = None
+        _ensure_standard_streams()
+        assert sys.stdout is not None
+        assert sys.stderr is not None
+        assert hasattr(sys.stdout, "isatty")
+        assert hasattr(sys.stderr, "isatty")
+
+        cfg = uvicorn.Config(app, host="127.0.0.1", port=8000, log_config=None)
+        cfg.configure_logging()
+    finally:
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr

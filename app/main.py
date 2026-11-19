@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
+import socket
+import sys
 import threading
 from typing import AsyncIterator, Optional
 import webbrowser
@@ -22,6 +24,7 @@ from app.config import (
     APP_VERSION,
     BUNDLE_DIR,
     DEFAULT_BACKUP_DIR,
+    DEFAULT_DATA_DIR,
     DEFAULT_DB_PATH,
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -29,6 +32,29 @@ from app.config import (
 from app.db.database import Database
 from app.services.credentials import CredentialManager
 from app.services.mail_poller import MailPollerService
+
+
+def _ensure_standard_streams() -> None:
+    """
+    En ejecutables de Windows compilados con PyInstaller (console=False),
+    sys.stdout y sys.stderr son None, lo que provoca un AttributeError ('isatty')
+    en el formateador por defecto de Uvicorn. Redirigimos ambos a un archivo de log local.
+    """
+    try:
+        DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = DEFAULT_DATA_DIR / "archivero.log"
+        if sys.stdout is None:
+            sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)
+        if sys.stderr is None:
+            sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
+_ensure_standard_streams()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,10 +139,26 @@ def create_app(
 app = create_app(start_background_poller=False)
 
 
+def _is_port_already_in_use(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
+
+
 def run_server() -> None:
     """Arranca el servidor web escuchando exclusivamente en localhost (127.0.0.1) y abre el navegador."""
-    production_app = create_app(start_background_poller=True)
+    _ensure_standard_streams()
     url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+
+    # Si el usuario hace doble clic en Archivero.exe cuando ya estaba abierto en segundo plano,
+    # simplemente abrimos el navegador en http://127.0.0.1:8000 sin fallar por puerto ocupado.
+    if _is_port_already_in_use(DEFAULT_HOST, DEFAULT_PORT):
+        logger.info("%s ya está en ejecución en %s. Abriendo navegador...", APP_NAME, url)
+        if os.environ.get("ARCHIVERO_NO_BROWSER", "0") != "1":
+            webbrowser.open(url)
+        return
+
+    production_app = create_app(start_background_poller=True)
     logger.info("Iniciando %s v%s en %s", APP_NAME, APP_VERSION, url)
 
     if os.environ.get("ARCHIVERO_NO_BROWSER", "0") != "1":
@@ -127,6 +169,7 @@ def run_server() -> None:
         host=DEFAULT_HOST,
         port=DEFAULT_PORT,
         log_level="info",
+        log_config=None,
     )
 
 
