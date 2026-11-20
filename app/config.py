@@ -9,7 +9,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 APP_NAME = "Archivero"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 KEYRING_SERVICE_NAME = "Archivero_Local"
 
 # Cuando se ejecuta como .exe empaquetado (PyInstaller), los datos persistentes
