@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "archivero"
-version = "0.1.1"
+version = "0.1.2"
 description = "Gestor local de facturas por correo y conciliación bancaria para farmacias"
 readme = "README.md"
 requires-python = ">=3.11"

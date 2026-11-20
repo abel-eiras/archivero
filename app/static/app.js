@@ -55,6 +55,91 @@ async function apiFetch(url, options = {}) {
 }
 
 /* =========================================================
+   Ayudas comunes: botones ocupados y paginación
+   ========================================================= */
+// Desactiva el botón mientras dura la petición para evitar envíos dobles.
+async function withBusyButton(btn, fn) {
+  if (btn && btn.disabled) return;
+  if (btn) {
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+  }
+  try {
+    return await fn();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+    }
+  }
+}
+
+// Registra el envío de un formulario desactivando sus botones de envío mientras se procesa.
+function onSubmitBusy(formId, handler) {
+  const form = document.getElementById(formId);
+  if (!form) return;
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (form.dataset.busy === "1") return;
+    const buttons = form.querySelectorAll('button[type="submit"], button:not([type]), input[type="submit"]');
+    form.dataset.busy = "1";
+    buttons.forEach((b) => {
+      b.disabled = true;
+      b.setAttribute("aria-busy", "true");
+    });
+    try {
+      await handler(e);
+    } catch (err) {
+      showToast("Error: " + err.message);
+    } finally {
+      form.dataset.busy = "";
+      buttons.forEach((b) => {
+        b.disabled = false;
+        b.removeAttribute("aria-busy");
+      });
+    }
+  });
+}
+
+const pageState = {
+  facturas: { offset: 0, limit: 50 },
+  revision: { offset: 0, limit: 50 },
+  bank: { offset: 0, limit: 50 },
+};
+
+function renderPager(containerId, key, total, reload) {
+  const box = document.getElementById(containerId);
+  if (!box) return;
+  const ps = pageState[key];
+  if (ps.offset >= total && total > 0) {
+    ps.offset = Math.max(0, Math.floor((total - 1) / ps.limit) * ps.limit);
+  }
+  if (total <= ps.limit) {
+    box.innerHTML = total ? `<span class="pager-info">${Number(total)} en total</span>` : "";
+    return;
+  }
+  const from = ps.offset + 1;
+  const to = Math.min(ps.offset + ps.limit, total);
+  box.innerHTML = `
+    <button type="button" class="btn btn-secondary btn-sm" data-dir="prev" aria-label="Página anterior" ${ps.offset === 0 ? "disabled" : ""}>‹ Anterior</button>
+    <span class="pager-info">${from}–${to} de ${Number(total)}</span>
+    <button type="button" class="btn btn-secondary btn-sm" data-dir="next" aria-label="Página siguiente" ${to >= total ? "disabled" : ""}>Siguiente ›</button>
+  `;
+  box.querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => {
+      ps.offset = b.dataset.dir === "prev" ? Math.max(0, ps.offset - ps.limit) : ps.offset + ps.limit;
+      reload();
+    })
+  );
+}
+
+function docTypeBadge(inv) {
+  if (inv.tipo_documento === "albaran") return ` <span class="badge badge-neutral">Albarán</span>`;
+  if (inv.tipo_documento === "abono") return ` <span class="badge badge-info">Abono</span>`;
+  return "";
+}
+
+/* =========================================================
    Navegación por pestañas
    ========================================================= */
 function setupTabs() {
@@ -65,6 +150,7 @@ function setupTabs() {
     "tab-revision": "Bandeja de Revisión",
     "tab-facturas": "Todas las Facturas",
     "tab-conciliacion": "Cuadrar con el Banco",
+    "tab-actividad": "Actividad y Avisos",
     "tab-configuracion": "Configuración Fácil",
     "tab-ayuda": "Ayuda Paso a Paso",
   };
@@ -83,6 +169,7 @@ function setupTabs() {
       if (target === "tab-facturas") loadInvoicesList();
       if (target === "tab-conciliacion") loadBankReconciliation();
       if (target === "tab-configuracion") loadConfiguration();
+      if (target === "tab-actividad") loadActivityScreen();
     });
   });
 }
@@ -143,23 +230,6 @@ async function loadDashboard() {
       }))
     );
 
-    const tbodyVto = document.getElementById("tbody-vencimientos");
-    tbodyVto.innerHTML = "";
-    (data.vencimientos_proximos || []).forEach((inv) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td><strong>${escapeHtml(inv.fecha_vencimiento || "-")}</strong></td>
-        <td>${escapeHtml(inv.proveedor_nombre)}</td>
-        <td>${escapeHtml(inv.numero_factura)}</td>
-        <td class="num">${fmtEur(inv.total)}</td>
-        <td><span class="badge badge-warning">Pendiente</span></td>
-      `;
-      tbodyVto.appendChild(tr);
-    });
-    if (!data.vencimientos_proximos || data.vencimientos_proximos.length === 0) {
-      tbodyVto.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">No hay facturas próximas a vencer en los próximos 15 días.</td></tr>`;
-    }
-
     const tbodyPend = document.getElementById("tbody-pendientes-pago");
     tbodyPend.innerHTML = "";
     (data.pendientes_pago || []).forEach((inv) => {
@@ -169,7 +239,7 @@ async function loadDashboard() {
         <td>${escapeHtml(inv.proveedor_nombre)}</td>
         <td>${escapeHtml(inv.numero_factura)}</td>
         <td>${escapeHtml(categoryName(inv.categoria))}</td>
-        <td class="num">${fmtEur(inv.total)}</td>
+        <td class="num">${fmtEur(inv.importe_pendiente ?? inv.total)}</td>
       `;
       tbodyPend.appendChild(tr);
     });
@@ -179,6 +249,8 @@ async function loadDashboard() {
   } catch (err) {
     showToast("Error cargando el resumen: " + err.message);
   }
+  loadLiquidity();
+  refreshUnreadCount();
 }
 
 function renderBarList(containerId, items) {
@@ -241,7 +313,11 @@ function populateCategorySelects() {
    ========================================================= */
 async function loadReviewInbox() {
   try {
-    const data = await apiFetch("/api/invoices?estado_revision=pendiente_revision");
+    const ps = pageState.revision;
+    const data = await apiFetch(
+      `/api/invoices?estado_revision=pendiente_revision&limit=${ps.limit}&offset=${ps.offset}`
+    );
+    renderPager("pager-revision", "revision", data.total || 0, loadReviewInbox);
     const tbody = document.getElementById("tbody-revision");
     tbody.innerHTML = "";
 
@@ -253,7 +329,7 @@ async function loadReviewInbox() {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${escapeHtml(inv.fecha_emision || "-")}</td>
-        <td><strong>${escapeHtml(inv.proveedor_nombre || "Sin proveedor")}</strong></td>
+        <td><strong>${escapeHtml(inv.proveedor_nombre || "Sin proveedor")}</strong>${docTypeBadge(inv)}</td>
         <td>${escapeHtml(inv.nif || "-")}</td>
         <td>${escapeHtml(inv.numero_factura || "-")}</td>
         <td>${escapeHtml(categoryName(inv.categoria))}</td>
@@ -294,7 +370,8 @@ async function quickConfirmInvoice(invoiceId) {
 /* =========================================================
    3. Todas las Facturas
    ========================================================= */
-async function loadInvoicesList() {
+async function loadInvoicesList(resetPage) {
+  if (resetPage === true) pageState.facturas.offset = 0;
   try {
     const params = new URLSearchParams();
     const q = document.getElementById("filter-busqueda").value.trim();
@@ -309,8 +386,13 @@ async function loadInvoicesList() {
     if (rev) params.set("estado_revision", rev);
     if (pago) params.set("estado_pago", pago);
     if (document.getElementById("filter-incluir-sustituidas").checked) params.set("incluir_sustituidas", "true");
+    const tipo = document.getElementById("filter-tipo-documento").value;
+    if (tipo) params.set("tipo_documento", tipo);
+    params.set("limit", String(pageState.facturas.limit));
+    params.set("offset", String(pageState.facturas.offset));
 
     const data = await apiFetch(`/api/invoices?${params.toString()}`);
+    renderPager("pager-facturas", "facturas", data.total || 0, loadInvoicesList);
     const tbody = document.getElementById("tbody-facturas");
     tbody.innerHTML = "";
 
@@ -327,14 +409,15 @@ async function loadInvoicesList() {
       }
 
       let pagoBadge = `<span class="badge badge-danger">Pendiente</span>`;
-      if (inv.estado_pago === "pagada") pagoBadge = `<span class="badge badge-success">Pagada</span>`;
+      if (inv.tipo_documento === "albaran") pagoBadge = `<span class="badge badge-neutral">No se paga</span>`;
+      else if (inv.estado_pago === "pagada") pagoBadge = `<span class="badge badge-success">Pagada</span>`;
       else if (inv.estado_pago === "parcial") pagoBadge = `<span class="badge badge-info">Pago parcial</span>`;
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${escapeHtml(inv.fecha_emision || "-")}</td>
         <td>${escapeHtml(inv.fecha_vencimiento || "-")}</td>
-        <td><strong>${escapeHtml(inv.proveedor_nombre)}</strong></td>
+        <td><strong>${escapeHtml(inv.proveedor_nombre)}</strong>${docTypeBadge(inv)}</td>
         <td>${escapeHtml(inv.nif)}</td>
         <td>${escapeHtml(inv.numero_factura)}</td>
         <td>${escapeHtml(categoryName(inv.categoria))}</td>
@@ -419,7 +502,10 @@ async function openInvoiceModal(invoiceId) {
     document.getElementById("modal-pdf-frame").src = inv.archivo_disponible ? pdfUrl : "about:blank";
 
     updateLiveMathCheck();
+    state.modalReturnFocus = document.activeElement;
     document.getElementById("invoice-modal").classList.add("open");
+    const firstField = document.getElementById("edit-proveedor");
+    if (firstField) firstField.focus();
   } catch (err) {
     showToast("Error cargando factura: " + err.message);
   }
@@ -451,11 +537,14 @@ function updateLiveMathCheck() {
 async function loadBankReconciliation() {
   try {
     const statusFilter = document.getElementById("filter-bank-status").value;
-    const params = statusFilter ? `?estado_conciliacion=${encodeURIComponent(statusFilter)}` : "";
+    const ps = pageState.bank;
+    const params = new URLSearchParams({ limit: String(ps.limit), offset: String(ps.offset) });
+    if (statusFilter) params.set("estado_conciliacion", statusFilter);
     const [txData, invData] = await Promise.all([
-      apiFetch(`/api/bank/transactions${params}`),
-      apiFetch("/api/invoices"),
+      apiFetch(`/api/bank/transactions?${params.toString()}`),
+      apiFetch("/api/invoices?tipo_documento=_sin_albaranes&limit=1000"),
     ]);
+    renderPager("pager-bank", "bank", txData.total || 0, loadBankReconciliation);
 
     state.unpaidInvoices = (invData.items || []).filter((i) => i.estado_pago !== "pagada");
     renderManualCandidateInvoices();
@@ -721,14 +810,33 @@ async function loadConfiguration() {
         <td><strong>${escapeHtml(acc.nombre)}</strong><br/><small style="color:#64748b;">${escapeHtml(MAIL_TYPE_LABELS[acc.tipo_conexion] || acc.tipo_conexion)}</small></td>
         <td>${escapeHtml(acc.email)}</td>
         <td>${acc.credencial_configurada ? '<span class="badge badge-success">Guardada</span>' : '<span class="badge badge-warning">Falta ponerla</span>'}</td>
-        <td><small>${escapeHtml(acc.ultima_sincronizacion || "Aún no revisado")}</small></td>
-        <td><button class="btn btn-danger btn-sm" onclick="deleteMailAccount(${acc.id})">Quitar</button></td>
+        <td><small>${escapeHtml(acc.ultima_sincronizacion_ok ? fmtDateTime(acc.ultima_sincronizacion_ok) : acc.ultima_sincronizacion ? fmtDateTime(acc.ultima_sincronizacion) : "Aún no revisado")}</small></td>
+        <td>${
+          acc.ultimo_error
+            ? `<small style="color:#991b1b;">${escapeHtml(acc.ultimo_error)}</small>`
+            : '<small style="color:#64748b;">Ninguno</small>'
+        }${
+          Number(acc.mensajes_con_error || 0) > 0
+            ? `<div><small style="color:#92400e;">${Number(acc.mensajes_con_error)} correo(s) sin procesar</small></div>`
+            : ""
+        }</td>
+        <td style="white-space:nowrap;">
+          ${
+            Number(acc.mensajes_con_error || 0) > 0 || acc.ultimo_error
+              ? `<button type="button" class="btn btn-secondary btn-sm" onclick="retryMailErrors(${Number(acc.id)}, this)">Reintentar correos con error</button>`
+              : ""
+          }
+          <button type="button" class="btn btn-danger btn-sm" aria-label="Quitar el buzón ${escapeHtml(acc.email)}" onclick="deleteMailAccount(${Number(acc.id)}, ${escapeHtml(JSON.stringify(acc.email || ""))})">Quitar</button>
+        </td>
       `;
       tbodyMail.appendChild(tr);
     });
     if (!mailData.items || mailData.items.length === 0) {
-      tbodyMail.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">No hay ningún buzón de correo añadido todavía.</td></tr>`;
+      tbodyMail.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#64748b;">No hay ningún buzón de correo añadido todavía.</td></tr>`;
     }
+
+    document.getElementById("cfg-plazo-defecto").value = settings.plazo_pago_defecto_dias ?? 30;
+    loadPaymentTerms();
 
     const tbodyRules = document.getElementById("tbody-rules");
     tbodyRules.innerHTML = "";
@@ -740,7 +848,7 @@ async function loadConfiguration() {
         <td>${escapeHtml(r.proveedor_nombre || "-")}</td>
         <td>${escapeHtml(categoryName(r.categoria))}</td>
         <td>${r.aprendida ? '<span class="badge badge-info">Automática</span>' : '<span class="badge badge-success">Puesta por ti</span>'}</td>
-        <td><button class="btn btn-danger btn-sm" onclick="deleteRule(${r.id})">Quitar</button></td>
+        <td><button type="button" class="btn btn-danger btn-sm" aria-label="Quitar la regla ${escapeHtml(r.patron)}" onclick="deleteRule(${Number(r.id)})">Quitar</button></td>
       `;
       tbodyRules.appendChild(tr);
     });
@@ -752,16 +860,60 @@ async function loadConfiguration() {
   }
 }
 
-async function deleteMailAccount(id) {
-  await apiFetch(`/api/mail/accounts/${id}`, { method: "DELETE" });
-  showToast("Cuenta de correo eliminada.");
-  loadConfiguration();
+async function deleteMailAccount(id, email) {
+  const quien = email ? ` (${email})` : "";
+  if (
+    !confirm(
+      `¿Quitar este buzón de correo${quien}? El programa dejará de revisarlo y se borrará su contraseña guardada. Las facturas ya archivadas no se tocan.`
+    )
+  )
+    return;
+  try {
+    await apiFetch(`/api/mail/accounts/${id}`, { method: "DELETE" });
+    showToast("Cuenta de correo eliminada.");
+    loadConfiguration();
+  } catch (err) {
+    showToast("No se pudo quitar el buzón: " + err.message);
+  }
+}
+
+async function retryMailErrors(id, btn) {
+  await withBusyButton(btn, async () => {
+    try {
+      showToast("Volviendo a intentar los correos con error...");
+      const res = await apiFetch(`/api/mail/accounts/${id}/retry-errors`, { method: "POST" });
+      const sync = res.sincronizacion || {};
+      showToast(
+        sync.error
+          ? "No se pudo conectar con el correo: " + sync.error
+          : `Reintento terminado: ${Number(sync.facturas_insertadas || 0)} factura(s) nueva(s).`
+      );
+      loadConfiguration();
+      loadDashboard();
+      if (typeof loadHealth === "function") loadHealth();
+    } catch (err) {
+      showToast("No se pudo reintentar: " + err.message);
+    }
+  });
 }
 
 async function deleteRule(id) {
-  await apiFetch(`/api/rules/${id}`, { method: "DELETE" });
-  showToast("Regla eliminada.");
-  loadConfiguration();
+  try {
+    await apiFetch(`/api/rules/${id}`, { method: "DELETE" });
+    showToast("Regla eliminada.");
+    loadConfiguration();
+  } catch (err) {
+    showToast("No se pudo quitar la regla: " + err.message);
+  }
+}
+
+function closeInvoiceModal() {
+  const modal = document.getElementById("invoice-modal");
+  if (!modal.classList.contains("open")) return;
+  modal.classList.remove("open");
+  const back = state.modalReturnFocus;
+  state.modalReturnFocus = null;
+  if (back && typeof back.focus === "function") back.focus();
 }
 
 function escapeHtml(str) {
@@ -790,6 +942,9 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast(`Leyendo y archivando ${files.length} factura(s) PDF...`);
       const res = await apiFetch("/api/invoices/upload", { method: "POST", body: fd });
       showToast(`Listo: ${res.insertadas} factura(s) nueva(s), ${res.duplicadas} ya estaban guardadas.`);
+      (res.resultados || [])
+        .filter((r) => r.status === "error")
+        .forEach((r) => showToast(`${r.filename}: ${r.detail || "no se pudo procesar"}`));
       loadDashboard();
       loadInvoicesList();
       loadReviewInbox();
@@ -801,24 +956,55 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Botón cargar datos de ejemplo
-  document.getElementById("btn-load-demo").addEventListener("click", async () => {
-    try {
-      showToast("Cargando facturas y movimientos bancarios de ejemplo...");
-      const res = await apiFetch("/api/demo/load-sample-data", { method: "POST" });
-      showToast(
-        `Datos de ejemplo listos: ${res.facturas_insertadas} facturas y ${res.movimientos_insertados} movimientos del banco.`
-      );
-      loadDashboard();
-      loadReviewInbox();
-      loadInvoicesList();
-      loadBankReconciliation();
-    } catch (err) {
-      showToast("Error cargando datos de ejemplo: " + err.message);
-    }
+  document.getElementById("btn-load-demo").addEventListener("click", (ev) => {
+    if (
+      !confirm(
+        "Se añadirán 7 facturas de ejemplo y varios movimientos del banco a tu base de datos real (marcados como ejemplo).\n\nCuando termines de probar, bórralos con «Eliminar datos de ejemplo». ¿Continuar?"
+      )
+    )
+      return;
+    withBusyButton(ev.currentTarget, async () => {
+      try {
+        showToast("Cargando facturas y movimientos bancarios de ejemplo...");
+        const res = await apiFetch("/api/demo/load-sample-data", { method: "POST" });
+        showToast(
+          `Datos de ejemplo listos: ${res.facturas_insertadas} facturas y ${res.movimientos_insertados} movimientos del banco.`
+        );
+        loadDashboard();
+        loadReviewInbox();
+        loadInvoicesList();
+        loadBankReconciliation();
+      } catch (err) {
+        showToast("Error cargando datos de ejemplo: " + err.message);
+      }
+    });
+  });
+
+  document.getElementById("btn-delete-demo").addEventListener("click", (ev) => {
+    if (
+      !confirm(
+        "Se borrarán las facturas de ejemplo, sus PDF archivados y los movimientos del banco de ejemplo. Tus datos reales no se tocan. ¿Continuar?"
+      )
+    )
+      return;
+    withBusyButton(ev.currentTarget, async () => {
+      try {
+        const res = await apiFetch("/api/demo/sample-data", { method: "DELETE" });
+        showToast(
+          `Datos de ejemplo eliminados: ${Number(res.facturas_borradas || 0)} factura(s) y ${Number(res.movimientos_borrados || 0)} movimiento(s).`
+        );
+        loadDashboard();
+        loadReviewInbox();
+        loadInvoicesList();
+        loadBankReconciliation();
+      } catch (err) {
+        showToast("No se pudieron borrar los datos de ejemplo: " + err.message);
+      }
+    });
   });
 
   // Botón revisar correo ahora
-  document.getElementById("btn-sync-mail").addEventListener("click", async () => {
+  document.getElementById("btn-sync-mail").addEventListener("click", (ev) => withBusyButton(ev.currentTarget, async () => {
     try {
       showToast("Buscando facturas nuevas en tu correo...");
       const res = await apiFetch("/api/mail/sync", { method: "POST" });
@@ -828,10 +1014,11 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       showToast("Error revisando el correo: " + err.message);
     }
-  });
+  }));
 
   // Filtros de facturas
-  document.getElementById("btn-apply-filters").addEventListener("click", loadInvoicesList);
+  document.getElementById("btn-apply-filters").addEventListener("click", () => loadInvoicesList(true));
+  document.getElementById("filter-tipo-documento").addEventListener("change", () => loadInvoicesList(true));
   document.getElementById("btn-clear-filters").addEventListener("click", () => {
     document.getElementById("filter-busqueda").value = "";
     document.getElementById("filter-mes").value = "";
@@ -839,20 +1026,23 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("filter-estado-revision").value = "";
     document.getElementById("filter-estado-pago").value = "";
     document.getElementById("filter-incluir-sustituidas").checked = false;
-    loadInvoicesList();
+    document.getElementById("filter-tipo-documento").value = "_sin_albaranes";
+    loadInvoicesList(true);
   });
   document.getElementById("btn-refresh-revision").addEventListener("click", loadReviewInbox);
 
   // Modal de revisión/edición
-  document.getElementById("btn-close-modal").addEventListener("click", () => {
-    document.getElementById("invoice-modal").classList.remove("open");
+  document.getElementById("btn-close-modal").addEventListener("click", closeInvoiceModal);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && document.getElementById("invoice-modal").classList.contains("open")) {
+      closeInvoiceModal();
+    }
   });
   ["edit-base", "edit-iva", "edit-recargo", "edit-irpf", "edit-total"].forEach((id) => {
     document.getElementById(id).addEventListener("input", updateLiveMathCheck);
   });
 
-  document.getElementById("form-edit-invoice").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  onSubmitBusy("form-edit-invoice", async (e) => {
     const id = document.getElementById("edit-invoice-id").value;
     const currentExtra = (state.currentEditingInvoice && state.currentEditingInvoice.datos_extra) || {};
     const payload = {
@@ -882,7 +1072,7 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload),
       });
       showToast("Factura confirmada y guardada.");
-      document.getElementById("invoice-modal").classList.remove("open");
+      closeInvoiceModal();
       loadReviewInbox();
       loadInvoicesList();
       loadDashboard();
@@ -894,18 +1084,24 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-delete-invoice").addEventListener("click", async () => {
     const id = document.getElementById("edit-invoice-id").value;
     if (!id || !confirm("¿Seguro que quieres borrar esta factura del programa?")) return;
-    await apiFetch(`/api/invoices/${id}`, { method: "DELETE" });
-    document.getElementById("invoice-modal").classList.remove("open");
-    showToast("Factura borrada.");
-    loadReviewInbox();
-    loadInvoicesList();
-    loadDashboard();
+    try {
+      await apiFetch(`/api/invoices/${id}`, { method: "DELETE" });
+      closeInvoiceModal();
+      showToast("Factura borrada.");
+      loadReviewInbox();
+      loadInvoicesList();
+      loadDashboard();
+    } catch (err) {
+      showToast("No se pudo borrar la factura: " + err.message);
+    }
   });
 
   // Conciliación bancaria
-  document.getElementById("filter-bank-status").addEventListener("change", loadBankReconciliation);
-  document.getElementById("form-bank-import").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  document.getElementById("filter-bank-status").addEventListener("change", () => {
+    pageState.bank.offset = 0;
+    loadBankReconciliation();
+  });
+  onSubmitBusy("form-bank-import", async (e) => {
     const fileInput = document.getElementById("bank-import-file");
     if (!fileInput.files || fileInput.files.length === 0) return;
 
@@ -924,8 +1120,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       const res = await apiFetch("/api/bank/import", { method: "POST", body: fd });
+      const saldos = res.saldos_importados || [];
       showToast(
-        `Extracto leído: ${res.nuevos_insertados} movimientos nuevos añadidos (${res.duplicados_omitidos} repetidos ignorados).`
+        `Extracto leído: ${res.nuevos_insertados} movimientos nuevos añadidos (${res.duplicados_omitidos} repetidos ignorados).` +
+          (saldos.length ? ` Saldo del banco: ${saldos.map((x) => fmtEur(x.saldo)).join(", ")}.` : "")
       );
       fileInput.value = "";
       loadBankReconciliation();
@@ -935,14 +1133,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("btn-run-auto-reconcile").addEventListener("click", async () => {
-    const res = await apiFetch("/api/bank/auto-reconcile", { method: "POST" });
-    showToast(
-      `Búsqueda terminada: ${res.conciliados_automaticos || 0} pagos cuadrados solos y ${res.propuestas_revision || 0} propuestas para revisar.`
-    );
-    loadBankReconciliation();
-    loadDashboard();
-  });
+  document.getElementById("btn-run-auto-reconcile").addEventListener("click", (ev) =>
+    withBusyButton(ev.currentTarget, async () => {
+      try {
+        const res = await apiFetch("/api/bank/auto-reconcile", { method: "POST" });
+        showToast(
+          `Búsqueda terminada: ${res.conciliados_automaticos || 0} pagos cuadrados solos y ${res.propuestas_revision || 0} propuestas para revisar.`
+        );
+        loadBankReconciliation();
+        loadDashboard();
+      } catch (err) {
+        showToast("No se pudo buscar coincidencias: " + err.message);
+      }
+    })
+  );
 
   document.getElementById("btn-save-manual-reconcile").addEventListener("click", async () => {
     if (!state.selectedBankTx) return;
@@ -1023,8 +1227,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("form-general-settings").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  onSubmitBusy("form-general-settings", async (e) => {
     const payload = {
       proveedor_modelo: document.getElementById("cfg-proveedor-modelo").value,
       modelo_llm: getSelectedModel(),
@@ -1049,8 +1252,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("form-mail-account").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  onSubmitBusy("form-mail-account", async (e) => {
     const remitentes = document
       .getElementById("mail-remitentes")
       .value.split(",")
@@ -1079,8 +1281,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("form-rule").addEventListener("submit", async (e) => {
-    e.preventDefault();
+  onSubmitBusy("form-rule", async (e) => {
     const payload = {
       tipo_regla: document.getElementById("rule-tipo").value,
       patron: document.getElementById("rule-patron").value.trim(),
@@ -1097,10 +1298,16 @@ document.addEventListener("DOMContentLoaded", () => {
     loadConfiguration();
   });
 
-  document.getElementById("btn-manual-backup").addEventListener("click", async () => {
-    const res = await apiFetch("/api/database/backup", { method: "POST" });
-    showToast(res.created ? `Copia de seguridad guardada en: ${res.backup_path}` : "Todavía no hay datos que copiar.");
-  });
+  document.getElementById("btn-manual-backup").addEventListener("click", (ev) =>
+    withBusyButton(ev.currentTarget, async () => {
+      try {
+        const res = await apiFetch("/api/database/backup", { method: "POST" });
+        showToast(res.created ? `Copia de seguridad guardada en: ${res.backup_path}` : "Todavía no hay datos que copiar.");
+      } catch (err) {
+        showToast("No se pudo guardar la copia: " + err.message);
+      }
+    })
+  );
 
   document.getElementById("btn-change-data-dir").addEventListener("click", async () => {
     const box = document.getElementById("data-dir-status-box");
@@ -1116,7 +1323,8 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ruta }),
       });
-      box.textContent = res.mensaje;
+      box.innerHTML = `${escapeHtml(res.mensaje || "")}<div class="alert alert-warning" style="margin-top:0.6rem;"><strong>Reinicia Archivero</strong> (ciérralo y vuelve a abrirlo) para empezar a usar la nueva carpeta. Hasta entonces no se recogerán facturas nuevas ni se revisará el correo.</div>`;
+      showToast("Reinicia Archivero para usar la nueva carpeta de datos.");
     } catch (err) {
       box.textContent = "No se pudo cambiar la carpeta: " + err.message;
     }
@@ -1144,4 +1352,505 @@ document.addEventListener("DOMContentLoaded", () => {
       box.textContent = `Ya tienes instalada la última versión disponible (${res.version_actual}).`;
     }
   });
+});
+
+/* =========================================================
+   Liquidez y próximos pagos (Resumen General)
+   ========================================================= */
+const LIQ_ALERT = {
+  verde: { cls: "badge-success", txt: "Todo bien" },
+  ambar: { cls: "badge-warning", txt: "Atención" },
+  rojo: { cls: "badge-danger", txt: "Peligro: saldo insuficiente" },
+};
+
+function fmtDate(iso) {
+  if (!iso) return "-";
+  const parts = String(iso).slice(0, 10).split("-");
+  return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : String(iso);
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadLiquidity() {
+  try {
+    const data = await apiFetch("/api/liquidity?horizonte=90");
+    const res = data.resumen || {};
+    const alert = LIQ_ALERT[data.alerta] || LIQ_ALERT.ambar;
+    const badge = document.getElementById("liq-alert-badge");
+    badge.className = `badge ${alert.cls}`;
+    badge.textContent = alert.txt;
+
+    const hint = document.getElementById("liq-hint");
+    if (!data.saldo_disponible) {
+      hint.style.display = "block";
+      hint.textContent =
+        "Importa un extracto Norma 43 o CAMT en 'Cuadrar con el Banco' para ver tu saldo.";
+    } else {
+      hint.style.display = "none";
+    }
+    const motivosBox = document.getElementById("liq-motivos");
+    const motivos = (data.motivos || []).filter((m) => data.saldo_disponible || !m.startsWith("Aún no"));
+    if (motivos.length) {
+      motivosBox.style.display = "block";
+      motivosBox.className = data.alerta === "rojo" ? "alert alert-danger" : "alert alert-warning";
+      motivosBox.innerHTML = motivos.map((m) => escapeHtml(m)).join("<br/>");
+    } else {
+      motivosBox.style.display = "none";
+    }
+
+    document.getElementById("liq-saldo").textContent = data.saldo_disponible ? fmtEur(data.saldo_actual) : "-";
+    const cuentas = data.cuentas || [];
+    document.getElementById("liq-saldo-fecha").textContent = cuentas.length
+      ? cuentas.map((c) => `${c.cuenta}: ${fmtEur(c.saldo)} a ${fmtDate(c.fecha_saldo)}${c.antiguo ? " (antiguo)" : ""}`).join(" · ")
+      : "Sin extracto importado";
+    document.getElementById("liq-vencido").textContent = fmtEur(res.vencido);
+    document.getElementById("liq-7").textContent = fmtEur(res.proximos_7);
+    document.getElementById("liq-30").textContent = fmtEur(res.proximos_30);
+    document.getElementById("liq-previsto").textContent =
+      res.saldo_previsto_30 === null || res.saldo_previsto_30 === undefined ? "-" : fmtEur(res.saldo_previsto_30);
+    const tile = document.getElementById("liq-tile-previsto");
+    tile.className = `liq-tile liq-${["verde", "ambar", "rojo"].includes(data.alerta) ? data.alerta : "ambar"}`;
+
+    renderLiquidityChart(data.serie_semanal || [], !!data.saldo_disponible);
+
+    const tbody = document.getElementById("tbody-liq-pagos");
+    tbody.innerHTML = "";
+    const pagos = data.pagos || [];
+    pagos.slice(0, 40).forEach((p) => {
+      const tr = document.createElement("tr");
+      const fechaBadge = p.vencida
+        ? ' <span class="badge badge-danger">vencida</span>'
+        : "";
+      const estBadge = p.estimado ? ' <span class="badge badge-info">estimada</span>' : "";
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(fmtDate(p.fecha))}</strong>${fechaBadge}${estBadge}</td>
+        <td>${escapeHtml(p.proveedor || "Sin proveedor")}</td>
+        <td>${escapeHtml(p.numero_factura || "-")}</td>
+        <td class="num">${fmtEur(p.importe_pendiente)}</td>
+        <td><button type="button" class="btn btn-secondary btn-sm" onclick="openInvoiceModal(${Number(p.factura_id)})">Ver factura</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if (pagos.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">No hay pagos pendientes en los próximos 90 días.</td></tr>`;
+    } else if (pagos.length > 40) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td colspan="5" style="text-align:center;color:#64748b;">Y ${pagos.length - 40} pagos más en los próximos 90 días.</td>`;
+      tbody.appendChild(tr);
+    }
+  } catch (err) {
+    showToast("Error cargando la previsión de pagos: " + err.message);
+  }
+}
+
+function renderLiquidityChart(series, hasBalance) {
+  const container = document.getElementById("liq-chart");
+  if (!series.length) {
+    container.innerHTML = "";
+    return;
+  }
+  const values = series.map((w) => Number(hasBalance ? w.saldo_proyectado : w.pagos_acumulados) || 0);
+  const W = 720;
+  const H = 220;
+  const padL = 70;
+  const padR = 10;
+  const padT = 14;
+  const padB = 34;
+  // Si todo el saldo es positivo, la escala parte de un mínimo cercano (no de 0 €)
+  // para que se aprecie cuánto baja cada semana. Si hay negativos, se incluye el 0 € como referencia.
+  const rawMax = Math.max(...values);
+  const rawMin = Math.min(...values);
+  const allPositive = rawMin >= 0;
+  const margin = Math.max((rawMax - rawMin) * 0.15, Math.abs(rawMax) * 0.02, 1);
+  const maxV = rawMax + margin;
+  const minV = allPositive ? Math.max(0, rawMin - margin) : Math.min(0, rawMin - margin);
+  const span = maxV - minV || 1;
+  const y = (v) => padT + ((maxV - v) / span) * (H - padT - padB);
+  const slot = (W - padL - padR) / values.length;
+  const barW = Math.max(6, slot * 0.6);
+  const baseV = minV <= 0 && maxV >= 0 ? 0 : minV;
+  const baseY = y(baseV);
+
+  let bars = "";
+  let points = "";
+  values.forEach((v, i) => {
+    const x = padL + i * slot + (slot - barW) / 2;
+    const top = Math.min(y(v), baseY);
+    const h = Math.max(1, Math.abs(y(v) - baseY));
+    const color = hasBalance && v < 0 ? "var(--danger)" : "var(--primary)";
+    const w = series[i];
+    const tip = `Semana ${w.semana} (${fmtDate(w.desde)} - ${fmtDate(w.hasta)}): ${
+      hasBalance ? "saldo previsto" : "pagos acumulados"
+    } ${fmtEur(v)}; pagos de la semana ${fmtEur(w.pagos)}`;
+    bars += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${color}" opacity="0.85"><title>${escapeHtml(tip)}</title></rect>`;
+    points += `${(x + barW / 2).toFixed(1)},${y(v).toFixed(1)} `;
+    if (i % 2 === 0) {
+      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 12}" font-size="11" text-anchor="middle" fill="#64748b">${escapeHtml(fmtDate(w.desde).slice(0, 5))}</text>`;
+    }
+  });
+  const gridVals = [maxV, (maxV + minV) / 2, minV];
+  let axis = gridVals
+    .map(
+      (gv) => `
+    <line x1="${padL}" x2="${W - padR}" y1="${y(gv).toFixed(1)}" y2="${y(gv).toFixed(1)}" stroke="#e2e8f0" stroke-width="1"/>
+    <text x="${padL - 6}" y="${(y(gv) + 4).toFixed(1)}" font-size="11" text-anchor="end" fill="#64748b">${escapeHtml(fmtEur(gv))}</text>`
+    )
+    .join("");
+  if (baseV === 0) {
+    axis += `<line x1="${padL}" x2="${W - padR}" y1="${baseY.toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="#94a3b8" stroke-width="1"/>
+    <text x="${padL - 6}" y="${(baseY + 4).toFixed(1)}" font-size="11" text-anchor="end" fill="#64748b">0 €</text>`;
+  }
+  const line = `<polyline points="${points.trim()}" fill="none" stroke="#0f172a" stroke-width="1.5" stroke-opacity="0.6"/>`;
+  bars += line;
+  const caption = hasBalance
+    ? "Cada barra es el saldo que quedaría en el banco al final de esa semana si pagas todo a su vencimiento (en rojo si queda en negativo)."
+    : "Sin saldo del banco: cada barra muestra el total acumulado que habrá que pagar hasta esa semana.";
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Saldo previsto por semana">${axis}${bars}</svg>
+    <div class="field-hint">${escapeHtml(caption)}</div>
+  `;
+}
+
+/* =========================================================
+   Plazos de pago por proveedor (Configuración)
+   ========================================================= */
+const TERM_ORIGIN_LABELS = { fijado: "Fijado por ti", aprendido: "Aprendido", general: "Plazo general" };
+
+async function loadPaymentTerms() {
+  try {
+    const data = await apiFetch("/api/suppliers/payment-terms");
+    const tbody = document.getElementById("tbody-payment-terms");
+    tbody.innerHTML = "";
+    (data.items || []).forEach((t) => {
+      const tr = document.createElement("tr");
+      const aprendido =
+        t.plazo_aprendido === null || t.plazo_aprendido === undefined
+          ? "-"
+          : `${Number(t.plazo_aprendido)} días <small style="color:#64748b;">(de ${Number(t.muestras_aprendidas)} facturas)</small>`;
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(t.nombre)}</strong>${t.nif ? `<br/><small style="color:#64748b;">${escapeHtml(t.nif)}</small>` : ""}</td>
+        <td class="num">${Number(t.total_facturas || 0)}</td>
+        <td>${aprendido}</td>
+        <td>${Number(t.plazo_efectivo)} días <span class="badge badge-info">${escapeHtml(TERM_ORIGIN_LABELS[t.origen] || t.origen)}</span></td>
+        <td style="white-space:nowrap;">
+          <input type="number" min="0" max="365" style="width:80px;" class="term-input" data-id="${Number(t.proveedor_id)}"
+            value="${t.plazo_pago_dias === null || t.plazo_pago_dias === undefined ? "" : Number(t.plazo_pago_dias)}" placeholder="auto" />
+          <button type="button" class="btn btn-secondary btn-sm" onclick="saveSupplierTerm(${Number(t.proveedor_id)})">Guardar</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if (!data.items || data.items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#64748b;">Todavía no hay proveedores registrados.</td></tr>`;
+    }
+  } catch (err) {
+    showToast("Error cargando los plazos de pago: " + err.message);
+  }
+}
+
+async function saveSupplierTerm(supplierId) {
+  const input = document.querySelector(`.term-input[data-id="${supplierId}"]`);
+  const raw = input ? input.value.trim() : "";
+  try {
+    await apiFetch(`/api/suppliers/${supplierId}/payment-term`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plazo_pago_dias: raw === "" ? null : parseInt(raw, 10) }),
+    });
+    showToast(raw === "" ? "Plazo en automático: se calculará con sus facturas." : `Plazo guardado: ${raw} días.`);
+    loadPaymentTerms();
+  } catch (err) {
+    showToast("Error guardando el plazo: " + err.message);
+  }
+}
+
+/* =========================================================
+   Actividad, avisos y campana
+   ========================================================= */
+const EVENT_TYPE_LABELS = {
+  inicio_programa: "Inicio del programa",
+  correo_revisado: "Correo revisado",
+  error_correo: "Error de correo",
+  factura_nueva: "Factura nueva",
+  factura_revision: "Factura para revisar",
+  factura_sustituida: "Factura sustituida",
+  factura_duplicada: "Factura repetida",
+  error_ia: "Fallo de la IA",
+  extracto_importado: "Extracto del banco",
+  conciliacion: "Cuadre con el banco",
+  copia_seguridad: "Copia de seguridad",
+  actualizacion: "Actualización",
+  config_cambiada: "Cambio de configuración",
+  vencimiento: "Vencimientos",
+};
+
+const LEVEL_BADGES = {
+  error: '<span class="badge badge-danger">Error</span>',
+  aviso: '<span class="badge badge-warning">Aviso</span>',
+  info: '<span class="badge badge-info">Info</span>',
+};
+
+const activityState = { offset: 0, limit: 50, total: 0 };
+
+function eventLink(ev) {
+  if (ev.entidad === "factura" && ev.entidad_id) {
+    return `<button type="button" class="btn btn-secondary btn-sm" onclick="openInvoiceModal(${Number(ev.entidad_id)})">Ver factura</button>`;
+  }
+  return "";
+}
+
+async function refreshUnreadCount() {
+  try {
+    const data = await apiFetch("/api/activity/unread-count");
+    const n = Number(data.no_leidos || 0);
+    const important = Number(data.importantes || 0);
+    const badge = document.getElementById("bell-badge");
+    const nav = document.getElementById("badge-actividad");
+    if (n > 0) {
+      badge.style.display = "inline-block";
+      badge.textContent = n > 99 ? "99+" : String(n);
+      badge.classList.toggle("bell-badge-important", important > 0);
+    } else {
+      badge.style.display = "none";
+    }
+    // La campana y el menú muestran el mismo número (avisos sin leer) para no confundir.
+    const title =
+      important > 0
+        ? `${n} avisos sin leer (${important} importantes: errores o cosas que revisar)`
+        : `${n} avisos sin leer`;
+    badge.title = title;
+    nav.title = title;
+    if (n > 0) {
+      nav.style.display = "inline-block";
+      nav.textContent = n > 99 ? "99+" : String(n);
+    } else {
+      nav.style.display = "none";
+    }
+  } catch (_) {
+    // Sin conexión con el programa: se reintentará en la siguiente vuelta
+  }
+}
+
+async function loadBellList() {
+  const list = document.getElementById("bell-list");
+  list.innerHTML = `<div class="field-hint">Cargando...</div>`;
+  try {
+    const data = await apiFetch("/api/activity?limit=40");
+    const rank = { error: 0, aviso: 1, info: 2 };
+    const items = (data.items || [])
+      .slice()
+      .sort((a, b) => (rank[a.nivel] ?? 3) - (rank[b.nivel] ?? 3) || (a.fecha < b.fecha ? 1 : -1))
+      .slice(0, 10);
+    if (!items.length) {
+      list.innerHTML = `<div class="field-hint" style="padding:0.5rem;">No hay avisos todavía.</div>`;
+      return;
+    }
+    list.innerHTML = items
+      .map(
+        (ev) => `
+        <div class="bell-item ${ev.leido ? "" : "unread"}">
+          ${LEVEL_BADGES[ev.nivel] || ""} ${escapeHtml(ev.mensaje)}
+          <div class="bell-item-meta">${escapeHtml(fmtDateTime(ev.fecha))} · ${escapeHtml(EVENT_TYPE_LABELS[ev.tipo] || ev.tipo)}
+            ${ev.entidad === "factura" && ev.entidad_id ? ` · <a href="#" onclick="openInvoiceModal(${Number(ev.entidad_id)}); return false;">Ver factura</a>` : ""}
+          </div>
+        </div>`
+      )
+      .join("");
+  } catch (err) {
+    list.innerHTML = `<div class="field-hint">No se pudieron cargar los avisos: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function toggleBellPanel(forceOpen) {
+  const panel = document.getElementById("bell-panel");
+  const btn = document.getElementById("btn-bell");
+  const open = forceOpen === undefined ? !panel.classList.contains("open") : forceOpen;
+  panel.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) loadBellList();
+}
+
+async function markAllEventsRead() {
+  try {
+    await apiFetch("/api/activity/mark-read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ all: true }),
+    });
+    refreshUnreadCount();
+    if (document.getElementById("bell-panel").classList.contains("open")) loadBellList();
+    if (document.getElementById("tab-actividad").classList.contains("active")) loadActivityList();
+  } catch (err) {
+    showToast("Error marcando los avisos: " + err.message);
+  }
+}
+
+function goToActivityTab() {
+  toggleBellPanel(false);
+  const btn = document.querySelector('.nav-btn[data-tab="tab-actividad"]');
+  if (btn) btn.click();
+}
+
+function populateActivityTypeFilter() {
+  const sel = document.getElementById("activity-filter-tipo");
+  if (sel.options.length > 1) return;
+  sel.innerHTML =
+    `<option value="">Todos</option>` +
+    Object.entries(EVENT_TYPE_LABELS)
+      .map(([k, v]) => `<option value="${escapeHtml(k)}">${escapeHtml(v)}</option>`)
+      .join("");
+}
+
+function loadActivityScreen() {
+  populateActivityTypeFilter();
+  activityState.offset = 0;
+  loadHealth();
+  loadActivityList();
+}
+
+async function loadHealth() {
+  const box = document.getElementById("health-status");
+  const probBox = document.getElementById("health-problems");
+  const tbody = document.getElementById("tbody-health-mailboxes");
+  try {
+    const h = await apiFetch("/api/activity/health");
+    box.className = `health-status health-${h.estado === "ok" ? "ok" : h.estado === "error" ? "error" : "aviso"}`;
+    box.innerHTML =
+      h.estado === "ok"
+        ? "<strong>✓ El programa está funcionando.</strong> Revisando el correo y guardando facturas con normalidad."
+        : "<strong>Hay cosas que revisar:</strong>";
+    probBox.innerHTML = (h.problemas || [])
+      .map(
+        (p) =>
+          `<div class="alert ${p.nivel === "error" ? "alert-danger" : "alert-warning"}" style="margin-bottom:0.5rem;">${escapeHtml(p.mensaje)}</div>`
+      )
+      .join("");
+
+    tbody.innerHTML = "";
+    (h.buzones || []).forEach((b) => {
+      const estado =
+        b.estado === "ok"
+          ? '<span class="badge badge-success">Funcionando</span>'
+          : b.estado === "error"
+          ? '<span class="badge badge-danger">Error</span>'
+          : '<span class="badge badge-warning">Revisar</span>';
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(b.nombre || b.email)}</strong><br/><small style="color:#64748b;">${escapeHtml(b.email)}</small></td>
+        <td>${escapeHtml(b.ultima_revision_ok ? fmtDateTime(b.ultima_revision_ok) : "Nunca")}${
+          b.minutos_desde_revision !== null && b.minutos_desde_revision !== undefined
+            ? ` <small style="color:#64748b;">(hace ${Number(b.minutos_desde_revision)} min)</small>`
+            : ""
+        }</td>
+        <td>${estado}${b.ultimo_error ? `<div style="font-size:0.76rem;color:#991b1b;">${escapeHtml(b.ultimo_error)}</div>` : ""}</td>
+        <td>${
+          Number(b.mensajes_con_error || 0) > 0 || b.ultimo_error
+            ? `<button type="button" class="btn btn-secondary btn-sm" onclick="retryMailErrors(${Number(b.id)}, this)">Reintentar correos con error</button>`
+            : ""
+        }</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if (!h.buzones || h.buzones.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#64748b;">No hay buzones de correo activos. Añádelos en Configuración.</td></tr>`;
+    }
+  } catch (err) {
+    box.className = "health-status health-aviso";
+    box.textContent = "No se pudo comprobar el estado del programa: " + err.message;
+  }
+}
+
+async function loadActivityList() {
+  const params = new URLSearchParams();
+  params.set("limit", String(activityState.limit));
+  params.set("offset", String(activityState.offset));
+  const nivel = document.getElementById("activity-filter-nivel").value;
+  const tipo = document.getElementById("activity-filter-tipo").value;
+  if (nivel) params.set("nivel", nivel);
+  if (tipo) params.set("tipo", tipo);
+  if (document.getElementById("activity-filter-unread").checked) params.set("solo_no_leidos", "true");
+  try {
+    const data = await apiFetch(`/api/activity?${params.toString()}`);
+    activityState.total = Number(data.total || 0);
+    const tbody = document.getElementById("tbody-activity");
+    tbody.innerHTML = "";
+    (data.items || []).forEach((ev) => {
+      const tr = document.createElement("tr");
+      if (!ev.leido) tr.className = "activity-unread";
+      tr.innerHTML = `
+        <td style="white-space:nowrap;">${escapeHtml(fmtDateTime(ev.fecha))}</td>
+        <td>${LEVEL_BADGES[ev.nivel] || escapeHtml(ev.nivel)}<br/><small style="color:#64748b;">${escapeHtml(EVENT_TYPE_LABELS[ev.tipo] || ev.tipo)}</small></td>
+        <td>${escapeHtml(ev.mensaje)}</td>
+        <td>${eventLink(ev)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if (!data.items || data.items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#64748b;">No hay actividad con estos filtros.</td></tr>`;
+    }
+    const from = activityState.total ? activityState.offset + 1 : 0;
+    const to = Math.min(activityState.offset + activityState.limit, activityState.total);
+    document.getElementById("activity-page-info").textContent = `${from}-${to} de ${activityState.total}`;
+    document.getElementById("btn-activity-prev").disabled = activityState.offset === 0;
+    document.getElementById("btn-activity-next").disabled = to >= activityState.total;
+  } catch (err) {
+    showToast("Error cargando la actividad: " + err.message);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("btn-bell").addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleBellPanel();
+  });
+  document.getElementById("bell-panel").addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => toggleBellPanel(false));
+  document.getElementById("btn-bell-mark-all").addEventListener("click", markAllEventsRead);
+  document.getElementById("btn-bell-see-all").addEventListener("click", goToActivityTab);
+  document.getElementById("btn-activity-mark-all").addEventListener("click", markAllEventsRead);
+  document.getElementById("btn-activity-refresh").addEventListener("click", () => {
+    activityState.offset = 0;
+    loadActivityList();
+  });
+  ["activity-filter-nivel", "activity-filter-tipo", "activity-filter-unread"].forEach((id) =>
+    document.getElementById(id).addEventListener("change", () => {
+      activityState.offset = 0;
+      loadActivityList();
+    })
+  );
+  document.getElementById("btn-activity-prev").addEventListener("click", () => {
+    activityState.offset = Math.max(0, activityState.offset - activityState.limit);
+    loadActivityList();
+  });
+  document.getElementById("btn-activity-next").addEventListener("click", () => {
+    activityState.offset += activityState.limit;
+    loadActivityList();
+  });
+
+  document.getElementById("btn-save-plazo-defecto").addEventListener("click", async () => {
+    const val = parseInt(document.getElementById("cfg-plazo-defecto").value, 10);
+    if (isNaN(val) || val < 0 || val > 365) {
+      showToast("Escribe un plazo entre 0 y 365 días.");
+      return;
+    }
+    try {
+      await apiFetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plazo_pago_defecto_dias: val }),
+      });
+      showToast(`Plazo general guardado: ${val} días.`);
+      loadPaymentTerms();
+    } catch (err) {
+      showToast("Error guardando el plazo general: " + err.message);
+    }
+  });
+
+  refreshUnreadCount();
+  setInterval(refreshUnreadCount, 60000);
 });

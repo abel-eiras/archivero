@@ -11,13 +11,20 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import re
+import secrets
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from pydantic import ValidationError
 
 from app.config import (
     APP_VERSION,
     CATEGORIAS_INICIALES,
     LLM_PROVIDERS,
+    MAX_BANK_UPLOAD_BYTES,
+    MAX_PDF_UPLOAD_BYTES,
+    OFFICIAL_GITHUB_REPO,
     TIPOS_DOCUMENTO,
     resolve_llm_endpoint,
     resolve_llm_model,
@@ -30,14 +37,18 @@ from app.models.schemas import (
     MailAccountCreate,
     ManualReconciliationRequest,
     RuleCreate,
+    SettingsUpdate,
 )
+from app.services.activity import compute_health
 from app.services.credentials import CredentialManager
 from app.services.data_location import change_data_dir
 from app.services.excel_exporter import AccountingExcelExporter
+from app.services.liquidity import compute_liquidity, supplier_payment_terms
 from app.services.llm_processor import describe_llm_error, validate_invoice_extraction
 from app.services.mail_poller import MailPollerService, OAuth2MailConnector
 from app.services.pipeline import InvoiceIngestionPipeline
-from app.services.reconciliation import BankReconciliationService
+from app.services.reconciliation import BankReconciliationService, ReconciliationError, ReconciliationNotFound
+from app.services.storage import relocate_archived_pdf, remove_empty_parents
 from app.services.updater_service import UpdaterService
 
 logger = logging.getLogger(__name__)
@@ -55,6 +66,64 @@ def get_credentials(request: Request) -> CredentialManager:
 
 def get_mail_poller(request: Request) -> MailPollerService:
     return request.app.state.mail_poller
+
+
+RESTART_REQUIRED_DETAIL = "Reinicia Archivero para usar la nueva carpeta de datos."
+
+
+def ensure_ingestion_allowed(request: Request) -> None:
+    """Tras cambiar la carpeta de datos no se aceptan datos nuevos hasta reiniciar (irían a la base antigua)."""
+    if getattr(request.app.state, "restart_required", False):
+        raise HTTPException(status_code=409, detail=RESTART_REQUIRED_DETAIL)
+
+
+def _read_upload_limited(upload: UploadFile, max_bytes: int) -> bytes:
+    """Lee un fichero subido sin pasar del tamaño máximo (devuelve max_bytes+1 bytes si lo supera)."""
+    return upload.file.read(max_bytes + 1)
+
+
+def _sync_invoice_archive(db: Database, invoice: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Tras editar o confirmar una factura, deja su PDF en la carpeta que le corresponde (Año/Mes/Categoría/
+    Proveedor) para que la carpeta de la gestoría siempre esté ordenada. Nunca pierde el archivo.
+    """
+    ruta = invoice.get("ruta_archivo") or ""
+    if not ruta:
+        return invoice
+    base = Path(db.get_setting("carpeta_salida") or "archivo_facturas")
+    res = relocate_archived_pdf(
+        current_path=ruta,
+        base_output_dir=base,
+        fecha_emision=invoice.get("fecha_emision"),
+        categoria=invoice.get("categoria") or "otros",
+        proveedor=invoice.get("proveedor_nombre") or "",
+        numero_factura=invoice.get("numero_factura") or "",
+        hash_pdf=invoice.get("hash_pdf") or "",
+        tipo_documento=invoice.get("tipo_documento") or "",
+    )
+    if res.error:
+        db.log_event(
+            tipo="config_cambiada",
+            nivel="aviso",
+            mensaje=f"Factura {invoice.get('numero_factura') or invoice['id']}: {res.message}",
+            entidad="factura",
+            entidad_id=invoice["id"],
+        )
+        return invoice
+    if res.moved:
+        if invoice.get("drive_file_id"):
+            db.log_event(
+                tipo="config_cambiada",
+                nivel="aviso",
+                mensaje=(
+                    f"Factura {invoice.get('numero_factura') or invoice['id']}: el PDF se ha movido en la carpeta local, "
+                    "pero la copia de Google Drive se queda donde estaba."
+                ),
+                entidad="factura",
+                entidad_id=invoice["id"],
+            )
+        return db.update_invoice(int(invoice["id"]), {"ruta_archivo": res.new_path}) or invoice
+    return invoice
 
 
 # =====================================================================
@@ -92,20 +161,25 @@ def list_invoices(
     fecha_hasta: Optional[str] = Query(default=None),
     busqueda: Optional[str] = Query(default=None),
     incluir_sustituidas: bool = Query(default=False),
+    tipo_documento: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    items = db.list_invoices(
+    filters = dict(
         incluir_sustituidas=incluir_sustituidas,
-        estado_revision=estado_revision,
-        estado_pago=estado_pago,
-        categoria=categoria,
-        proveedor=proveedor,
-        mes=mes,
-        fecha_desde=fecha_desde,
-        fecha_hasta=fecha_hasta,
-        busqueda=busqueda,
+        estado_revision=estado_revision or None,
+        estado_pago=estado_pago or None,
+        categoria=categoria or None,
+        proveedor=proveedor or None,
+        mes=mes or None,
+        fecha_desde=fecha_desde or None,
+        fecha_hasta=fecha_hasta or None,
+        busqueda=busqueda or None,
+        tipo_documento=tipo_documento or None,
     )
-    return {"total": len(items), "items": items}
+    items = db.list_invoices(limit=limit, offset=offset, **filters)
+    return {"total": db.count_invoices(**filters), "limit": limit, "offset": offset, "items": items}
 
 
 @router.get("/invoices/{invoice_id}")
@@ -117,13 +191,19 @@ def get_invoice(invoice_id: int, db: Database = Depends(get_db)) -> Dict[str, An
 
 
 @router.post("/invoices/upload")
-async def upload_invoice_pdfs(
+def upload_invoice_pdfs(
+    request: Request,
     files: List[UploadFile] = File(...),
     remitente: str = Form(default=""),
     db: Database = Depends(get_db),
     creds: CredentialManager = Depends(get_credentials),
 ) -> Dict[str, Any]:
-    """Sube y procesa uno o varios archivos PDF de factura a través del pipeline completo."""
+    """
+    Sube y procesa uno o varios PDF. Es una función normal (no async) para que FastAPI la ejecute en
+    un hilo aparte y no bloquee el servidor. Cada archivo se valida y procesa por separado: si uno
+    falla, se indica su error y los demás siguen adelante.
+    """
+    ensure_ingestion_allowed(request)
     settings = db.get_all_settings()
     provider = settings.get("proveedor_modelo") or "google_ai_studio"
     llm_key = creds.get_llm_api_key(provider)
@@ -138,36 +218,47 @@ async def upload_invoice_pdfs(
     resultados: List[Dict[str, Any]] = []
     insertadas = 0
     duplicadas = 0
+    errores = 0
+    limite_mb = MAX_PDF_UPLOAD_BYTES // (1024 * 1024)
 
     for f in files:
-        content = await f.read()
-        if not content:
-            continue
-        res = pipeline.ingest_pdf(
-            pdf_source=content,
-            filename=f.filename or "factura.pdf",
-            sender_email=remitente,
-        )
-        if res.status == "insertada":
+        nombre = f.filename or "factura.pdf"
+        item: Dict[str, Any] = {"filename": nombre, "status": "error", "invoice_id": None, "hash_pdf": "", "invoice": None}
+        try:
+            content = _read_upload_limited(f, MAX_PDF_UPLOAD_BYTES)
+            if not content:
+                item["detail"] = "El archivo está vacío."
+            elif len(content) > MAX_PDF_UPLOAD_BYTES:
+                item["detail"] = f"El archivo pasa de {limite_mb} MB; no se ha procesado."
+            elif b"%PDF" not in content[:1024]:
+                item["detail"] = "No es un PDF válido."
+            else:
+                res = pipeline.ingest_pdf(pdf_source=content, filename=nombre, sender_email=remitente)
+                item.update(
+                    {
+                        "status": res.status,
+                        "invoice_id": res.invoice_id,
+                        "hash_pdf": res.hash_pdf,
+                        "detail": res.detail,
+                        "invoice": res.invoice,
+                    }
+                )
+        except Exception as exc:
+            logger.warning("Error procesando el PDF subido %s: %s", nombre, exc)
+            item["detail"] = f"No se pudo leer este PDF: {exc}"
+        if item["status"] == "insertada":
             insertadas += 1
-        elif res.status == "duplicada":
+        elif item["status"] == "duplicada":
             duplicadas += 1
-
-        resultados.append(
-            {
-                "filename": f.filename,
-                "status": res.status,
-                "invoice_id": res.invoice_id,
-                "hash_pdf": res.hash_pdf,
-                "detail": res.detail,
-                "invoice": res.invoice,
-            }
-        )
+        elif item["status"] == "error":
+            errores += 1
+        resultados.append(item)
 
     return {
         "procesados": len(resultados),
         "insertadas": insertadas,
         "duplicadas": duplicadas,
+        "errores": errores,
         "resultados": resultados,
     }
 
@@ -225,6 +316,10 @@ def update_or_confirm_invoice(
     if not updated:
         raise HTTPException(status_code=404, detail="No se pudo actualizar la factura.")
 
+    archive_fields = {"proveedor_nombre", "fecha_emision", "categoria", "numero_factura", "tipo_documento", "estado_revision"}
+    if archive_fields & set(updates.keys()):
+        updated = _sync_invoice_archive(db, updated)
+
     if aprender_regla and updated.get("proveedor_nombre"):
         patron = updated.get("nif") or updated["proveedor_nombre"]
         db.create_rule(
@@ -250,7 +345,7 @@ def confirm_invoice_quick(invoice_id: int, db: Database = Depends(get_db)) -> Di
         invoice_id,
         {"estado_revision": "confirmada", "nivel_confianza": 1.0, "errores_validacion": []},
     )
-    return updated or {}
+    return _sync_invoice_archive(db, updated) if updated else {}
 
 
 @router.delete("/invoices/{invoice_id}")
@@ -301,18 +396,24 @@ def open_archived_pdf(invoice_id: int, db: Database = Depends(get_db)) -> Respon
 def list_bank_transactions(
     estado_conciliacion: Optional[str] = Query(default=None),
     banco: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
-    items = db.list_bank_transactions(estado_conciliacion=estado_conciliacion, banco=banco)
+    filters = dict(estado_conciliacion=estado_conciliacion or None, banco=banco or None)
+    items = db.list_bank_transactions(limit=limit, offset=offset, **filters)
     return {
-        "total": len(items),
+        "total": db.count_bank_transactions(**filters),
+        "limit": limit,
+        "offset": offset,
         "items": items,
         "mapeos_csv": db.get_csv_mappings(),
     }
 
 
 @router.post("/bank/import")
-async def import_bank_statement(
+def import_bank_statement(
+    request: Request,
     file: UploadFile = File(...),
     formato: str = Form(default="auto"),
     banco: str = Form(default="Banco Principal"),
@@ -325,9 +426,15 @@ async def import_bank_statement(
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     """Importa un fichero de extracto bancario en formato Norma 43, CAMT.053 o CSV/Excel."""
-    content = await file.read()
+    ensure_ingestion_allowed(request)
+    content = _read_upload_limited(file, MAX_BANK_UPLOAD_BYTES)
     if not content:
         raise HTTPException(status_code=400, detail="El fichero importado está vacío.")
+    if len(content) > MAX_BANK_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El extracto pasa de {MAX_BANK_UPLOAD_BYTES // (1024 * 1024)} MB; divídelo en varios ficheros.",
+        )
 
     csv_mapping: Optional[CSVMappingConfig] = None
     if columna_fecha and columna_concepto and (columna_importe or columna_cargo):
@@ -359,7 +466,17 @@ async def import_bank_statement(
 @router.post("/bank/auto-reconcile")
 def trigger_auto_reconcile(db: Database = Depends(get_db)) -> Dict[str, Any]:
     service = BankReconciliationService(db=db)
-    return service.run_auto_reconciliation()
+    result = service.run_auto_reconciliation()
+    if result.get("conciliados_automaticos") or result.get("propuestas_revision"):
+        db.log_event(
+            tipo="conciliacion",
+            mensaje=(
+                f"Búsqueda de pagos en el banco: {result.get('conciliados_automaticos', 0)} cuadrados solos y "
+                f"{result.get('propuestas_revision', 0)} propuestas para revisar."
+            ),
+            detalle=result,
+        )
+    return result
 
 
 @router.post("/bank/transactions/{movimiento_id}/confirm-proposal")
@@ -368,7 +485,12 @@ def confirm_reconciliation_proposal(
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     service = BankReconciliationService(db=db)
-    return service.confirm_proposal(movimiento_id)
+    try:
+        return service.confirm_proposal(movimiento_id)
+    except ReconciliationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/bank/transactions/{movimiento_id}/reject-proposal")
@@ -377,7 +499,10 @@ def reject_reconciliation_proposal(
     db: Database = Depends(get_db),
 ) -> Dict[str, Any]:
     service = BankReconciliationService(db=db)
-    return service.reject_proposal(movimiento_id)
+    try:
+        return service.reject_proposal(movimiento_id)
+    except ReconciliationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/bank/reconcile-manual")
@@ -393,8 +518,10 @@ def manual_reconcile_endpoint(
             notas=payload.notas,
             aprender_regla=payload.aprender_regla,
         )
-    except ValueError as exc:
+    except ReconciliationNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # =====================================================================
@@ -449,31 +576,84 @@ def save_mail_account(
 def remove_mail_account(
     account_id: int,
     db: Database = Depends(get_db),
+    creds: CredentialManager = Depends(get_credentials),
 ) -> Dict[str, Any]:
+    account = next((a for a in db.list_mail_accounts() if int(a["id"]) == account_id), None)
     ok = db.delete_mail_account(account_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Cuenta de correo no encontrada.")
+    email_addr = ((account or {}).get("email") or "").lower().strip()
+    if email_addr:
+        # Borrar también la contraseña y los tokens guardados de esa cuenta.
+        for key in (f"mail_password:{email_addr}", f"mail_oauth:{email_addr}"):
+            try:
+                creds.delete_secret(key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("No se pudo borrar el secreto %s: %s", key, exc)
     return {"deleted": True, "id": account_id}
 
 
-@router.get("/mail/oauth/authorize-url")
+@router.post("/mail/accounts/{account_id}/retry-errors")
+def retry_mail_errors(
+    account_id: int,
+    request: Request,
+    db: Database = Depends(get_db),
+    poller: MailPollerService = Depends(get_mail_poller),
+) -> Dict[str, Any]:
+    """Vuelve a intentar los correos de esta cuenta cuyos adjuntos no se pudieron procesar."""
+    ensure_ingestion_allowed(request)
+    account = next((a for a in db.list_mail_accounts() if int(a["id"]) == account_id), None)
+    if not account:
+        raise HTTPException(status_code=404, detail="Cuenta de correo no encontrada.")
+    reiniciados = db.reset_error_messages(account_id)
+    resultado = poller.sync_account(account)
+    return {"reintentados": reiniciados, "sincronizacion": resultado}
+
+
+OAUTH_STATE_TTL_SECONDS = 15 * 60
+
+
+def _oauth_states(request: Request) -> Dict[str, Dict[str, Any]]:
+    states = getattr(request.app.state, "oauth_states", None)
+    if states is None:
+        states = {}
+        request.app.state.oauth_states = states
+    return states
+
+
+@router.post("/mail/oauth/authorize-url")
 def get_oauth_authorize_url(
-    provider: str = Query(..., description="oauth_gmail o oauth_outlook"),
-    client_id: str = Query(...),
-    email: str = Query(default=""),
+    request: Request,
+    payload: Dict[str, Any],
     creds: CredentialManager = Depends(get_credentials),
 ) -> Dict[str, str]:
-    # Recordar client_id y proveedor para poder canjear el código en el callback
-    if email:
-        tokens = creds.get_oauth_tokens(email)
-        if client_id and tokens.get("client_id") != client_id:
-            tokens["client_id"] = client_id
-        tokens["provider"] = provider
-        creds.set_oauth_tokens(email, tokens)
+    """
+    Prepara la dirección de autorización OAuth2. El parámetro 'state' es un código aleatorio de un solo
+    uso guardado en el servidor (no el correo), para que nadie pueda colar tokens en otra cuenta.
+    """
+    provider = str(payload.get("provider") or "")
+    client_id = str(payload.get("client_id") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+    if provider not in OAuth2MailConnector.PROVIDERS:
+        raise HTTPException(status_code=400, detail="Proveedor OAuth desconocido.")
+    if not client_id or not email:
+        raise HTTPException(status_code=400, detail="Faltan el correo o el identificador de cliente (client_id).")
+    tokens = creds.get_oauth_tokens(email)
+    if tokens.get("client_id") != client_id:
+        tokens["client_id"] = client_id
+    tokens["provider"] = provider
+    creds.set_oauth_tokens(email, tokens)
+
+    states = _oauth_states(request)
+    now = time.time()
+    for key in [k for k, v in states.items() if now - v.get("creado", 0) > OAUTH_STATE_TTL_SECONDS]:
+        states.pop(key, None)
+    nonce = secrets.token_urlsafe(24)
+    states[nonce] = {"email": email, "creado": now}
     url = OAuth2MailConnector.build_authorization_url(
         provider_key=provider,
         client_id=client_id,
-        state=email,
+        state=nonce,
     )
     return {"authorization_url": url}
 
@@ -492,6 +672,7 @@ def _oauth_result_page(titulo: str, mensaje: str, ok: bool, status_code: int = 2
 
 @router.get("/mail/oauth/callback")
 def oauth_callback(
+    request: Request,
     code: str = Query(default=""),
     state: str = Query(default=""),
     error: str = Query(default=""),
@@ -499,7 +680,17 @@ def oauth_callback(
     creds: CredentialManager = Depends(get_credentials),
 ) -> HTMLResponse:
     """Recibe la redirección OAuth2 (Gmail/Outlook), canjea el código por tokens y los guarda."""
-    email_addr = (state or "").strip().lower()
+    entry = _oauth_states(request).pop(state or "", None) if state else None
+    if entry and time.time() - entry.get("creado", 0) > OAUTH_STATE_TTL_SECONDS:
+        entry = None
+    email_addr = (entry or {}).get("email", "")
+    if state and not entry and not error:
+        return _oauth_result_page(
+            "Autorización caducada o no reconocida",
+            "Este enlace de autorización ya no es válido. Vuelve a pulsar «Conectar» desde Archivero.",
+            False,
+            400,
+        )
     if error:
         return _oauth_result_page("No se completó la autorización", f"El proveedor devolvió: {error}", False, 400)
     if not code or not email_addr:
@@ -564,7 +755,8 @@ def oauth_callback(
 
 
 @router.post("/mail/sync")
-def sync_mail_now(poller: MailPollerService = Depends(get_mail_poller)) -> Dict[str, Any]:
+def sync_mail_now(request: Request, poller: MailPollerService = Depends(get_mail_poller)) -> Dict[str, Any]:
+    ensure_ingestion_allowed(request)
     results = poller.sync_all_active_accounts()
     return {"sincronizaciones": results}
 
@@ -629,13 +821,24 @@ def update_settings_endpoint(
     Los secretos (api_key_llm, gdrive_access_token, github_token) se extraen y guardan
     exclusivamente en el almacén seguro del sistema (keyring/bóveda cifrada), nunca en SQLite.
     """
-    clean_payload = dict(payload)
-    api_key = clean_payload.pop("llm_api_key", None)
-    gdrive_token = clean_payload.pop("gdrive_access_token", None)
-    github_token = clean_payload.pop("github_token", None)
-    clean_payload.pop("estado_secretos", None)
-    clean_payload.pop("catalogo_proveedores", None)
-    clean_payload.pop("carpeta_datos", None)
+    raw = dict(payload)
+    api_key = raw.pop("llm_api_key", None)
+    gdrive_token = raw.pop("gdrive_access_token", None)
+    github_token = raw.pop("github_token", None)
+    # Campos solo informativos que la pantalla devuelve tal cual: se ignoran.
+    for readonly in ("estado_secretos", "catalogo_proveedores", "carpeta_datos"):
+        raw.pop(readonly, None)
+    try:
+        validated = SettingsUpdate.model_validate(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=_settings_error_message(exc)) from exc
+    clean_payload = validated.model_dump(exclude_unset=True)
+
+    if "github_repo" in clean_payload and (clean_payload["github_repo"] or "").strip() != OFFICIAL_GITHUB_REPO:
+        raise HTTPException(
+            status_code=400,
+            detail="El repositorio de actualizaciones no se puede cambiar: Archivero solo se actualiza desde su repositorio oficial.",
+        )
 
     provider = clean_payload.get("proveedor_modelo") or db.get_setting("proveedor_modelo") or "google_ai_studio"
     if provider not in LLM_PROVIDERS:
@@ -655,7 +858,9 @@ def update_settings_endpoint(
     if github_token is not None and str(github_token).strip():
         creds.set_github_token(str(github_token).strip())
 
+    previous = db.get_all_settings()
     updated = db.set_settings(clean_payload)
+    _log_settings_changes(db, previous, updated, api_key_changed=bool(api_key and str(api_key).strip()))
     updated["estado_secretos"] = {
         "llm_api_key_configurada": bool(creds.get_llm_api_key(provider)),
         "gdrive_token_configurado": bool(creds.get_gdrive_token()),
@@ -664,19 +869,86 @@ def update_settings_endpoint(
     return updated
 
 
+_SETTINGS_LABELS = {
+    "umbral_confianza": "El umbral de confianza debe estar entre 0,5 y 0,99",
+    "intervalo_correo_minutos": "El intervalo del correo debe estar entre 5 y 1440 minutos",
+    "plazo_pago_defecto_dias": "El plazo de pago general debe estar entre 0 y 365 días",
+}
+
+
+def _settings_error_message(exc: ValidationError) -> str:
+    mensajes = []
+    for err in exc.errors():
+        campo = str(err.get("loc", ["?"])[0])
+        if err.get("type") == "extra_forbidden":
+            mensajes.append(f"Opción desconocida: «{campo}»")
+        elif campo in _SETTINGS_LABELS:
+            mensajes.append(_SETTINGS_LABELS[campo])
+        else:
+            msg = str(err.get("msg") or "valor no válido").removeprefix("Value error, ")
+            mensajes.append(f"{campo}: {msg}")
+    return "Configuración no válida. " + "; ".join(dict.fromkeys(mensajes)) + "."
+
+
+_WATCHED_SETTINGS = {
+    "proveedor_modelo": "proveedor de IA",
+    "modelo_llm": "modelo de IA",
+    "llm_endpoint_url": "dirección de la IA",
+    "carpeta_salida": "carpeta de facturas",
+    "capa_almacenamiento": "lugar de archivo",
+    "plazo_pago_defecto_dias": "plazo de pago general",
+    "intervalo_correo_minutos": "intervalo de revisión del correo",
+}
+
+
+def _log_settings_changes(
+    db: Database, previous: Dict[str, Any], updated: Dict[str, Any], api_key_changed: bool = False
+) -> None:
+    cambios = [
+        f"{label}: «{previous.get(key) or '-'}» → «{updated.get(key) or '-'}»"
+        for key, label in _WATCHED_SETTINGS.items()
+        if previous.get(key) != updated.get(key)
+    ]
+    if api_key_changed:
+        cambios.append("clave de la IA actualizada")
+    if cambios:
+        db.log_event(
+            tipo="config_cambiada",
+            mensaje="Configuración cambiada: " + "; ".join(cambios) + ".",
+            detalle={"cambios": cambios},
+        )
+
+
 @router.post("/settings/data-dir")
 def change_data_dir_endpoint(
+    request: Request,
     payload: Dict[str, Any],
     db: Database = Depends(get_db),
     creds: CredentialManager = Depends(get_credentials),
+    poller: MailPollerService = Depends(get_mail_poller),
 ) -> Dict[str, Any]:
     """Cambia la carpeta de datos (base de datos y claves cifradas). Requiere reiniciar Archivero."""
     try:
-        return change_data_dir(
+        result = change_data_dir(
             raw_path=str(payload.get("ruta") or ""),
             current_db_path=db.db_path,
             current_vault_dir=creds.vault_dir,
         )
+        db.log_event(
+            tipo="config_cambiada",
+            nivel="aviso",
+            mensaje=f"Carpeta de datos cambiada a «{payload.get('ruta')}». Reinicia Archivero para empezar a usarla.",
+        )
+        # Hasta reiniciar, no se aceptan facturas ni movimientos nuevos: irían a la base de datos antigua.
+        request.app.state.restart_required = True
+        try:
+            poller.stop_background_worker()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("No se pudo parar la revisión del correo: %s", exc)
+        result = dict(result)
+        result["reinicio_necesario"] = True
+        result["mensaje_reinicio"] = RESTART_REQUIRED_DETAIL
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except OSError as exc:
@@ -770,10 +1042,111 @@ def test_llm_connection_endpoint(
 @router.post("/database/backup")
 def create_manual_db_backup(db: Database = Depends(get_db)) -> Dict[str, Any]:
     backup_path = db.create_backup(reason="manual_ui")
+    if backup_path is not None:
+        db.log_event(
+            tipo="copia_seguridad",
+            mensaje=f"Copia de seguridad guardada en {backup_path}.",
+            detalle={"ruta": str(backup_path)},
+        )
     return {
         "created": backup_path is not None,
         "backup_path": str(backup_path) if backup_path else "",
     }
+
+
+# =====================================================================
+# 4b. Actividad, avisos y estado del programa
+# =====================================================================
+
+
+@router.get("/activity")
+def list_activity(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    nivel: Optional[str] = Query(default=None),
+    tipo: Optional[str] = Query(default=None),
+    solo_no_leidos: bool = Query(default=False),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    return db.list_events(
+        limit=limit, offset=offset, nivel=nivel or None, tipo=tipo or None, solo_no_leidos=solo_no_leidos
+    )
+
+
+@router.get("/activity/unread-count")
+def activity_unread_count(db: Database = Depends(get_db)) -> Dict[str, int]:
+    return db.count_unread()
+
+
+@router.post("/activity/mark-read")
+def activity_mark_read(payload: Dict[str, Any], db: Database = Depends(get_db)) -> Dict[str, Any]:
+    if payload.get("all"):
+        marked = db.mark_read(all_events=True)
+    else:
+        raw_ids = payload.get("ids") or []
+        if not isinstance(raw_ids, list):
+            raise HTTPException(status_code=400, detail="'ids' debe ser una lista de números.")
+        try:
+            ids = [int(i) for i in raw_ids]
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="'ids' debe ser una lista de números.")
+        marked = db.mark_read(ids=ids)
+    return {"marcados": marked, **db.count_unread()}
+
+
+@router.get("/activity/health")
+def activity_health(request: Request, db: Database = Depends(get_db)) -> Dict[str, Any]:
+    poller = getattr(request.app.state, "mail_poller", None)
+    running = poller.is_running() if poller is not None and hasattr(poller, "is_running") else None
+    return compute_health(db, poller_running=running)
+
+
+# =====================================================================
+# 4c. Liquidez y plazos de pago por proveedor
+# =====================================================================
+
+
+@router.get("/liquidity")
+def read_liquidity(
+    horizonte: int = Query(default=90, ge=7, le=365),
+    db: Database = Depends(get_db),
+) -> Dict[str, Any]:
+    return compute_liquidity(db, horizonte=horizonte)
+
+
+@router.get("/suppliers/payment-terms")
+def list_supplier_payment_terms(db: Database = Depends(get_db)) -> Dict[str, Any]:
+    return supplier_payment_terms(db)
+
+
+@router.put("/suppliers/{supplier_id}/payment-term")
+def update_supplier_payment_term(
+    supplier_id: int, payload: Dict[str, Any], db: Database = Depends(get_db)
+) -> Dict[str, Any]:
+    raw = payload.get("plazo_pago_dias")
+    dias: Optional[int]
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        dias = None
+    else:
+        try:
+            dias = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="El plazo debe ser un número de días.")
+        if not 0 <= dias <= 365:
+            raise HTTPException(status_code=400, detail="El plazo debe estar entre 0 y 365 días.")
+    supplier = db.get_supplier(supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
+    db.set_supplier_payment_term(supplier_id, dias)
+    db.log_event(
+        tipo="config_cambiada",
+        mensaje=(
+            f"Plazo de pago de {supplier['nombre']}: "
+            + (f"{dias} días." if dias is not None else "se vuelve a calcular solo.")
+        ),
+    )
+    item = next((t for t in supplier_payment_terms(db)["items"] if t["proveedor_id"] == supplier_id), None)
+    return item or {"proveedor_id": supplier_id, "plazo_pago_dias": dias}
 
 
 # =====================================================================
@@ -788,6 +1161,9 @@ def export_accounting_excel(
     estado_revision: Optional[str] = Query(default=None),
     db: Database = Depends(get_db),
 ) -> Response:
+    mes = (mes or "").strip() or None
+    if mes and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", mes):
+        raise HTTPException(status_code=400, detail="El mes debe tener el formato AAAA-MM (por ejemplo 2026-03).")
     exporter = AccountingExcelExporter(db=db)
     xlsx_bytes = exporter.generate_workbook_bytes(
         mes=mes,
@@ -810,7 +1186,16 @@ def check_updates_endpoint(
     repo = db.get_setting("github_repo", "abel-eiras/archivero")
     token = creds.get_github_token()
     updater = UpdaterService(github_repo=repo, github_token=token)
-    return updater.check_for_updates()
+    info = updater.check_for_updates()
+    remote = info.get("version_remota")
+    if info.get("hay_actualizacion") and remote and db.get_setting("ultima_version_avisada", "") != remote:
+        db.set_settings({"ultima_version_avisada": remote})
+        db.log_event(
+            tipo="actualizacion",
+            mensaje=f"Hay una versión nueva de Archivero disponible ({remote}). Instálala desde Configuración.",
+            detalle={"version_remota": remote, "version_actual": APP_VERSION},
+        )
+    return info
 
 
 def _shutdown_for_update(request: Request, delay_seconds: float = 1.5) -> None:
@@ -885,6 +1270,7 @@ def install_update_endpoint(
 
 @router.post("/demo/load-sample-data")
 def load_phase0_sample_data(
+    request: Request,
     db: Database = Depends(get_db),
     creds: CredentialManager = Depends(get_credentials),
 ) -> Dict[str, Any]:
@@ -892,6 +1278,35 @@ def load_phase0_sample_data(
     Genera e ingiere el lote de prueba de la Fase 0 (facturas reales variadas de farmacia
     y extractos bancarios en Norma 43, CAMT.053 y CSV) para probar todas las pantallas.
     """
+    ensure_ingestion_allowed(request)
     from scripts.generate_sample_data import generate_and_ingest_sample_dataset
 
     return generate_and_ingest_sample_dataset(db=db, creds=creds)
+
+
+@router.delete("/demo/sample-data")
+def delete_sample_data(db: Database = Depends(get_db)) -> Dict[str, Any]:
+    """Borra las facturas y movimientos de ejemplo (y sus PDF archivados). No toca los datos reales."""
+    from scripts.generate_sample_data import DEMO_BANK_FILE_PREFIX
+
+    res = db.delete_demo_data(DEMO_BANK_FILE_PREFIX)
+    base = Path(db.get_setting("carpeta_salida") or "archivo_facturas").resolve()
+    pdf_borrados = 0
+    for ruta in res.pop("rutas_pdf", []) or []:
+        try:
+            path = Path(ruta).resolve()
+            if path.is_file() and (base == path.parent or base in path.parents):
+                path.unlink()
+                pdf_borrados += 1
+                remove_empty_parents(path.parent, base)
+        except OSError as exc:
+            logger.warning("No se pudo borrar el PDF de ejemplo %s: %s", ruta, exc)
+    res["pdf_borrados"] = pdf_borrados
+    db.log_event(
+        tipo="config_cambiada",
+        mensaje=(
+            f"Datos de ejemplo eliminados: {res.get('facturas_borradas', 0)} factura(s) y "
+            f"{res.get('movimientos_borrados', 0)} movimiento(s) del banco."
+        ),
+    )
+    return res

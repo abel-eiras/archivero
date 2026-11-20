@@ -9,7 +9,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 APP_NAME = "Archivero"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 KEYRING_SERVICE_NAME = "Archivero_Local"
 
 # Cuando se ejecuta como .exe empaquetado (PyInstaller), los datos persistentes
@@ -109,8 +109,23 @@ TIPOS_DOCUMENTO: Dict[str, str] = {
     "factura_servicios": "Factura de servicios",
     "alquiler": "Alquiler",
     "abono": "Abono o factura rectificativa",
+    "albaran": "Albarán o nota de entrega (no es factura)",
     "otros": "Otros",
 }
+
+# Los albaranes se archivan y guardan, pero no cuentan como gasto ni como pago pendiente
+TIPO_ALBARAN = "albaran"
+ALBARANES_FOLDER = "Albaranes"
+
+# Repositorio oficial de actualizaciones: no se puede cambiar desde la API
+OFFICIAL_GITHUB_REPO = "abel-eiras/archivero"
+
+# Límites de tamaño de los ficheros subidos
+MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_BANK_UPLOAD_BYTES = 15 * 1024 * 1024
+
+# Copias de seguridad diarias que se conservan
+DAILY_BACKUPS_TO_KEEP = 14
 
 # Categorías genéricas y abiertas de partida (Sección 5)
 CATEGORIAS_INICIALES: List[Dict[str, str]] = [
@@ -274,4 +289,5 @@ DEFAULT_SETTINGS = {
     "categorias": CATEGORIAS_INICIALES,
     "remitentes_globales": [],
     "aviso_privacidad_aceptado": False,
+    "plazo_pago_defecto_dias": 30,  # plazo de pago usado cuando la factura no trae vencimiento
 }

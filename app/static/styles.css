@@ -611,3 +611,193 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.87rem;
   color: #334155;
 }
+
+/* Campana de avisos */
+.bell-wrap {
+  position: relative;
+}
+
+.bell-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bell-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.bell-badge.bell-badge-important {
+  background: var(--danger);
+}
+
+.bell-panel {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: min(380px, 90vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.15);
+  padding: 0.75rem;
+  z-index: 50;
+}
+
+.bell-panel.open {
+  display: block;
+}
+
+.bell-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.bell-list {
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 0.6rem;
+}
+
+.bell-item {
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.83rem;
+}
+
+.bell-item.unread {
+  background: #f8fafc;
+}
+
+.bell-item-meta {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  margin-top: 0.2rem;
+}
+
+/* Estado de salud del programa */
+.health-status {
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.health-ok {
+  background: var(--success-bg);
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.health-aviso {
+  background: var(--warning-bg);
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.health-error {
+  background: var(--danger-bg);
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.activity-unread td {
+  font-weight: 600;
+}
+
+/* Panel de liquidez */
+.liq-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.liq-tile {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  background: #f8fafc;
+}
+
+.liq-tile.liq-verde {
+  background: var(--success-bg);
+  border-color: #bbf7d0;
+}
+
+.liq-tile.liq-ambar {
+  background: var(--warning-bg);
+  border-color: #fde68a;
+}
+
+.liq-tile.liq-rojo {
+  background: var(--danger-bg);
+  border-color: #fecaca;
+}
+
+.liq-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin: 0.2rem 0;
+}
+
+.liq-subtitle {
+  font-size: 0.92rem;
+  margin: 0.5rem 0 0.5rem;
+}
+
+.liq-chart {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.liq-chart svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Paginación y estado ocupado */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.7rem 0 0;
+  flex-wrap: wrap;
+}
+.pager-info {
+  font-size: 0.82rem;
+  color: var(--text-muted, #64748b);
+}
+.badge-neutral {
+  background: #e2e8f0;
+  color: #334155;
+}
+button[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* Mensajes largos de la actividad: que salten de línea en vez de salirse de la tabla */
+#tbody-activity td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

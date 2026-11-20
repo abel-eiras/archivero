@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY updater.py .
+COPY scripts ./scripts
+COPY docs ./docs
 
 VOLUME ["/app/data", "/app/archivo_facturas"]
 

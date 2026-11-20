@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ app_name }} - Gestión de Facturas para Farmacias</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
 </head>
 <body>
   <!-- Barra lateral de navegación -->
@@ -38,6 +38,12 @@
         <button class="nav-btn" data-tab="tab-conciliacion">
           <span>Cuadrar con el Banco</span>
           <span id="badge-propuestas-banco" class="nav-badge" style="display:none; background:#d97706;">0</span>
+        </button>
+      </li>
+      <li>
+        <button class="nav-btn" data-tab="tab-actividad">
+          <span>Actividad y Avisos</span>
+          <span id="badge-actividad" class="nav-badge" style="display:none;">0</span>
         </button>
       </li>
       <li>
@@ -75,9 +81,20 @@
         <a href="/api/export/excel" class="btn btn-secondary" id="btn-export-excel" title="Descarga un archivo Excel listo para enviar a tu gestoría">
           Descargar Excel para Gestoría
         </a>
-        <button class="btn btn-secondary" id="btn-load-demo" title="Carga facturas y movimientos de ejemplo para aprender a usar el programa">
-          Cargar Datos de Ejemplo
-        </button>
+        <div class="bell-wrap">
+          <button type="button" class="btn btn-secondary bell-btn" id="btn-bell" title="Avisos del programa" aria-label="Avisos del programa" aria-expanded="false">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span id="bell-badge" class="bell-badge" style="display:none;">0</span>
+          </button>
+          <div id="bell-panel" class="bell-panel" role="dialog" aria-label="Últimos avisos">
+            <div class="bell-panel-head">
+              <strong>Últimos avisos</strong>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-bell-mark-all">Marcar todo como leído</button>
+            </div>
+            <div id="bell-list" class="bell-list"></div>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-bell-see-all" style="width:100%;">Ver toda la actividad</button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -132,45 +149,76 @@
           </div>
         </div>
 
-        <div class="grid-2">
-          <div class="card">
-            <div class="card-header">
-              <h2 class="card-title">Próximos Vencimientos (próximos 15 días o vencidas)</h2>
+        <div class="card" id="liquidity-card">
+          <div class="card-header">
+            <h2 class="card-title">Liquidez y Próximos Pagos</h2>
+            <span id="liq-alert-badge" class="badge badge-info">-</span>
+          </div>
+          <div id="liq-hint" class="alert alert-info" style="display:none;"></div>
+          <div id="liq-motivos" class="alert alert-warning" style="display:none;"></div>
+          <div class="liq-tiles">
+            <div class="liq-tile">
+              <div class="kpi-label">Saldo en banco</div>
+              <div class="liq-value" id="liq-saldo">-</div>
+              <div class="kpi-sub" id="liq-saldo-fecha">Sin extracto importado</div>
             </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Fecha límite</th>
-                    <th>Proveedor</th>
-                    <th>Nº Factura</th>
-                    <th class="num">Total</th>
-                    <th>Estado</th>
-                  </tr>
-                </thead>
-                <tbody id="tbody-vencimientos"></tbody>
-              </table>
+            <div class="liq-tile">
+              <div class="kpi-label">Vencido sin pagar</div>
+              <div class="liq-value" id="liq-vencido" style="color:var(--danger);">-</div>
+            </div>
+            <div class="liq-tile">
+              <div class="kpi-label">Próximos 7 días</div>
+              <div class="liq-value" id="liq-7">-</div>
+            </div>
+            <div class="liq-tile">
+              <div class="kpi-label">Próximos 30 días</div>
+              <div class="liq-value" id="liq-30">-</div>
+            </div>
+            <div class="liq-tile" id="liq-tile-previsto">
+              <div class="kpi-label">Saldo previsto a 30 días</div>
+              <div class="liq-value" id="liq-previsto">-</div>
+              <div class="kpi-sub">Saldo de hoy menos lo vencido y lo que vence en 30 días</div>
             </div>
           </div>
+          <h3 class="liq-subtitle">Saldo previsto semana a semana (próximas 13 semanas)</h3>
+          <div id="liq-chart" class="liq-chart"></div>
+          <h3 class="liq-subtitle">Próximos pagos a proveedores</h3>
+          <p class="field-hint" style="margin-bottom:0.5rem;">
+            Las fechas marcadas como <span class="badge badge-info">estimada</span> son de facturas sin fecha de vencimiento: se calculan con el plazo habitual de cada proveedor (puedes cambiarlo en Configuración).
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha de pago</th>
+                  <th>Proveedor</th>
+                  <th>Nº Factura</th>
+                  <th class="num">Pendiente</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="tbody-liq-pagos"></tbody>
+            </table>
+          </div>
+        </div>
 
-          <div class="card">
-            <div class="card-header">
-              <h2 class="card-title">Facturas Pendientes de Pago</h2>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Fecha factura</th>
-                    <th>Proveedor</th>
-                    <th>Nº Factura</th>
-                    <th>Categoría</th>
-                    <th class="num">Importe</th>
-                  </tr>
-                </thead>
-                <tbody id="tbody-pendientes-pago"></tbody>
-              </table>
-            </div>
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Facturas Pendientes de Pago</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha factura</th>
+                  <th>Proveedor</th>
+                  <th>Nº Factura</th>
+                  <th>Categoría</th>
+                  <th class="num">Pendiente</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-pendientes-pago"></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -207,6 +255,7 @@
               <tbody id="tbody-revision"></tbody>
             </table>
           </div>
+          <div class="pager" id="pager-revision"></div>
         </div>
       </section>
 
@@ -248,6 +297,14 @@
               </select>
             </div>
             <div class="form-group">
+              <label for="filter-tipo-documento">Tipo</label>
+              <select id="filter-tipo-documento">
+                <option value="_sin_albaranes">Facturas y abonos</option>
+                <option value="albaran">Solo albaranes</option>
+                <option value="">Todo (también albaranes)</option>
+              </select>
+            </div>
+            <div class="form-group">
               <label for="filter-incluir-sustituidas" style="display:flex;align-items:center;gap:0.35rem;">
                 <input type="checkbox" id="filter-incluir-sustituidas" /> Mostrar facturas sustituidas
               </label>
@@ -277,6 +334,7 @@
               <tbody id="tbody-facturas"></tbody>
             </table>
           </div>
+          <div class="pager" id="pager-facturas"></div>
         </div>
       </section>
 
@@ -419,6 +477,78 @@
               <tbody id="tbody-bank-transactions"></tbody>
             </table>
           </div>
+          <div class="pager" id="pager-bank"></div>
+        </div>
+      </section>
+
+      <!-- ========================================================= -->
+      <!-- ACTIVIDAD Y AVISOS                                        -->
+      <!-- ========================================================= -->
+      <section id="tab-actividad" class="tab-panel">
+        <div class="card" id="health-card">
+          <div id="health-status" class="health-status health-ok">
+            <strong>Comprobando el estado del programa...</strong>
+          </div>
+          <div id="health-problems"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Buzón de correo</th>
+                  <th>Última revisión correcta</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-health-mailboxes"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Todo lo que ha hecho el programa</h2>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-activity-mark-all">Marcar todo como leído</button>
+          </div>
+          <div class="filters-bar">
+            <div class="form-group">
+              <label for="activity-filter-nivel">Importancia</label>
+              <select id="activity-filter-nivel">
+                <option value="">Todas</option>
+                <option value="error">Errores</option>
+                <option value="aviso">Avisos</option>
+                <option value="info">Información</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="activity-filter-tipo">Tipo</label>
+              <select id="activity-filter-tipo">
+                <option value="">Todos</option>
+              </select>
+            </div>
+            <label style="display:flex; align-items:center; gap:0.35rem; font-size:0.85rem;">
+              <input type="checkbox" id="activity-filter-unread" /> Solo los no leídos
+            </label>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-activity-refresh">Buscar</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Importancia</th>
+                  <th>Qué ha pasado</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="tbody-activity"></tbody>
+            </table>
+          </div>
+          <div style="display:flex; gap:0.5rem; align-items:center; justify-content:flex-end; margin-top:0.75rem;">
+            <span id="activity-page-info" class="field-hint"></span>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-activity-prev">Anteriores</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-activity-next">Siguientes</button>
+          </div>
         </div>
       </section>
 
@@ -427,7 +557,7 @@
       <!-- ========================================================= -->
       <section id="tab-configuracion" class="tab-panel">
         <div class="alert alert-warning">
-          <strong>Nota sobre privacidad de tus facturas:</strong> Si utilizas la versión gratuita del lector de Google, Google podría emplear los documentos procesados para mejorar sus sistemas. Si prefieres privacidad total empresarial, puedes usar una cuenta de Google de pago o elegir el <em>Modo básico sin Internet</em>. Todas tus contraseñas se guardan bajo llave en el sistema de seguridad de Windows/Mac, nunca en archivos sueltos.
+          <strong>Nota sobre privacidad de tus facturas:</strong> Si utilizas la versión gratuita del lector de Google, Google podría emplear los documentos procesados para mejorar sus sistemas. Si prefieres privacidad total empresarial, puedes usar una cuenta de Google de pago o elegir el <em>Modo básico sin Internet</em>. Tus contraseñas y claves se guardan bajo llave en el almacén de seguridad de Windows/Mac; si ese almacén no está disponible, se guardan en un archivo cifrado dentro de la carpeta de datos del programa, nunca en texto legible.
         </div>
 
         <div class="grid-2">
@@ -527,8 +657,9 @@
                 <label>¿Dónde quieres que se guarden las copias ordenadas en PDF?</label>
                 <select id="cfg-capa-almacenamiento">
                   <option value="local">En una carpeta de este ordenador (sirve también para Google Drive, OneDrive o Dropbox instalados)</option>
-                  <option value="gdrive">Subir directamente a través de Internet a Google Drive</option>
+                  <option value="gdrive" disabled>Subir directamente a Google Drive por Internet (próximamente)</option>
                 </select>
+                <span class="field-hint">Próximamente — de momento usa la carpeta sincronizada de Google Drive para escritorio.</span>
               </div>
 
               <div class="form-group" style="margin-bottom:1.1rem;">
@@ -607,7 +738,8 @@
                     <th>Correo</th>
                     <th>Contraseña</th>
                     <th>Última revisión</th>
-                    <th>Quitar</th>
+                    <th>Último error</th>
+                    <th>Acciones</th>
                   </tr>
                 </thead>
                 <tbody id="tbody-mail-accounts"></tbody>
@@ -673,7 +805,7 @@
               <h2 class="card-title">4. Copias de Seguridad y Actualizaciones</h2>
             </div>
             <p style="font-size:0.86rem; color:var(--text-muted); margin-bottom:1rem;">
-              El programa guarda una copia de seguridad automática cada vez que se actualiza. Además, con estos dos botones puedes guardar una copia en cualquier momento o comprobar si hay mejoras disponibles.
+              El programa guarda solo una copia de seguridad de la base de datos cada día (conserva las de los últimos 14 días) y otra antes de cada cambio interno de versión. Además, con estos dos botones puedes guardar una copia en cualquier momento o comprobar si hay mejoras disponibles.
             </p>
             <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;">
               <button class="btn btn-secondary" id="btn-manual-backup">Guardar Copia de Seguridad Ahora</button>
@@ -697,6 +829,38 @@
               </span>
               <div id="data-dir-status-box" style="font-size:0.85rem; margin-top:0.4rem;"></div>
             </div>
+          </div>
+        </div>
+
+        <!-- Bloque 5: Plazos de pago por proveedor (para la previsión de liquidez) -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">5. Plazos de Pago por Proveedor</h2>
+          </div>
+          <p class="field-hint" style="margin-bottom:0.85rem;">
+            Cuando una factura no trae fecha de vencimiento, el programa calcula cuándo habrá que pagarla con el plazo habitual de su proveedor:
+            el que pongas aquí, o si lo dejas vacío, el que aprende de sus otras facturas. Si no hay datos, usa el plazo general.
+          </p>
+          <div class="filters-bar">
+            <div class="form-group">
+              <label for="cfg-plazo-defecto">Plazo general (días)</label>
+              <input type="number" id="cfg-plazo-defecto" min="0" max="365" style="width:110px;" />
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-save-plazo-defecto">Guardar plazo general</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th class="num">Facturas</th>
+                  <th>Plazo aprendido</th>
+                  <th>Plazo que se usa</th>
+                  <th>Fijar plazo (días)</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-payment-terms"></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -841,6 +1005,21 @@
             </details>
           </div>
         </div>
+
+        <div class="card" id="demo-card">
+          <div class="card-header">
+            <h2 class="card-title">Probar el programa</h2>
+          </div>
+          <p style="font-size:0.88rem; color:#334155; margin-bottom:0.9rem;">
+            Si quieres ver cómo funciona antes de usarlo con tus facturas, puedes cargar unos datos de ejemplo:
+            7 facturas inventadas de proveedores de farmacia y unos movimientos del banco. Se guardan en tu base de datos real
+            (marcados como ejemplo), así que cuando termines de probar, bórralos con el segundo botón.
+          </p>
+          <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary" id="btn-load-demo">Cargar datos de ejemplo</button>
+            <button type="button" class="btn btn-danger" id="btn-delete-demo">Eliminar datos de ejemplo</button>
+          </div>
+        </div>
       </section>
     </main>
   </div>
@@ -848,11 +1027,11 @@
   <!-- ========================================================= -->
   <!-- MODAL DE REVISIÓN / EDICIÓN DE FACTURA Y VISOR PDF        -->
   <!-- ========================================================= -->
-  <div id="invoice-modal" class="modal-backdrop">
+  <div id="invoice-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-invoice-title">
     <div class="modal-content">
       <div class="card-header">
         <h2 class="card-title" id="modal-invoice-title">Revisar y Confirmar Factura</h2>
-        <button class="btn btn-secondary btn-sm" id="btn-close-modal">Cerrar ✕</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-modal" aria-label="Cerrar la ventana de la factura">Cerrar ✕</button>
       </div>
 
       <div id="modal-validation-alerts"></div>
@@ -950,6 +1129,6 @@
   </div>
 
   <div id="toast-container"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

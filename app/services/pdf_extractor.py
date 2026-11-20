@@ -178,6 +178,23 @@ def _try_local_tesseract_ocr(pdf_bytes: bytes) -> Optional[str]:
         return None
 
 
+_HEADER_INVOICE_RE = re.compile(
+    r"\b(factura|facturas|fra|fact|abono|recibo|albar[aá]n|rectificativa|invoice|bill)\b", re.IGNORECASE
+)
+_NIF_RE = re.compile(
+    r"\b(?:[A-HJ-NP-SUVW][-\s]?\d{7}[-\s]?[0-9A-J]|\d{8}[-\s]?[A-Z]|[XYZ][-\s]?\d{7}[-\s]?[A-Z])\b",
+    re.IGNORECASE,
+)
+_AMOUNT_KEYWORDS_RE = re.compile(
+    r"\b(total(?:\s+factura|\s+a\s+pagar)?|importe\s+total|base\s+imponible|i\.?v\.?a\.?|cuota|subtotal)\b",
+    re.IGNORECASE,
+)
+_DOC_KEYWORDS_RE = re.compile(
+    r"\b(factura|abono|rectificativa|albar[aá]n|n[ºo°]\s*(?:de\s+)?factura|vencimiento|recargo\s+(?:de\s+)?equivalencia)\b",
+    re.IGNORECASE,
+)
+
+
 def looks_like_invoice(
     pdf_content: PDFContent,
     filename: str = "",
@@ -185,17 +202,22 @@ def looks_like_invoice(
 ) -> bool:
     """
     Determina si un PDF adjunto parece una factura por su nombre, asunto del correo o texto extraído.
+    Se buscan palabras completas (así «fraude» o «tarifa» no cuentan como «fra») y, en el texto, señales
+    fuertes: un NIF/CIF junto con importes (total, IVA, base imponible), o palabras de factura más importes.
     Si el PDF es escaneado (sin capa de texto), se considera candidato para que el modelo con visión lo evalúe.
     """
-    combined_header = f"{filename} {subject}".lower()
-    header_keywords = ["factura", "fra", "abono", "recibo", "albaran", "rectificativa", "invoice", "cargo"]
-    if any(k in combined_header for k in header_keywords):
+    combined_header = re.sub(r"[^0-9a-záéíóúñü]+", " ", f"{filename} {subject}".lower())
+    if _HEADER_INVOICE_RE.search(combined_header):
         return True
 
     if not pdf_content.has_text_layer:
         # Un PDF escaneado sin texto nativo se acepta como candidato para que el modelo con visión decida
         return True
 
-    lowered_text = pdf_content.text.lower()
-    matches = sum(1 for kw in INVOICE_KEYWORDS if kw in lowered_text)
-    return matches >= 2
+    text = pdf_content.text or ""
+    amount_hits = {m.group(1).lower() for m in _AMOUNT_KEYWORDS_RE.finditer(text)}
+    if not amount_hits:
+        return False
+    has_nif = bool(_NIF_RE.search(text)) or bool(re.search(r"\b(nif|cif)\b", text, re.IGNORECASE))
+    has_doc_word = bool(_DOC_KEYWORDS_RE.search(text))
+    return (has_nif and has_doc_word) or (has_nif and len(amount_hits) >= 2) or (has_doc_word and len(amount_hits) >= 2)

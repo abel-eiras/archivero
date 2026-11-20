@@ -9,10 +9,26 @@ import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.db.database import Database
+from app.services.activity import fmt_eur
 from app.models.schemas import CSVMappingConfig
-from app.services.bank_parsers import parse_camt053, parse_csv_or_excel, parse_norma43
+from app.services.bank_parsers import (
+    parse_camt053,
+    parse_camt053_balances,
+    parse_csv_balance,
+    parse_csv_or_excel,
+    parse_norma43,
+    parse_norma43_balances,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class ReconciliationError(ValueError):
+    """Datos de conciliación no válidos (importe excesivo, factura ya pagada...)."""
+
+
+class ReconciliationNotFound(ReconciliationError):
+    """El movimiento o la factura indicados no existen."""
 
 
 def _now_iso() -> str:
@@ -58,6 +74,7 @@ class BankReconciliationService:
                 else:
                     fmt = "csv"
 
+        effective_mapping: Optional[Union[CSVMappingConfig, Dict[str, Any]]] = None
         if fmt == "norma43":
             parsed_txs = parse_norma43(content, banco_default=banco, origen_archivo=filename)
         elif fmt == "camt053":
@@ -91,13 +108,72 @@ class BankReconciliationService:
         if auto_reconcile and nuevos > 0:
             reconciliation_summary = self.run_auto_reconciliation()
 
+        saldos = self._store_statement_balances(content, filename, fmt, banco, effective_mapping)
+
+        mensaje = (
+            f"Extracto de {banco or 'banco'} importado ({filename}): {nuevos} movimientos nuevos, "
+            f"{duplicados} repetidos."
+        )
+        if reconciliation_summary:
+            mensaje += (
+                f" Cuadrados solos: {reconciliation_summary.get('conciliados_automaticos', 0)};"
+                f" propuestas para revisar: {reconciliation_summary.get('propuestas_revision', 0)}."
+            )
+        if saldos:
+            mensaje += " Saldo leído: " + ", ".join(
+                f"{s['cuenta']} {fmt_eur(s['saldo'])} a {s['fecha_saldo']}" for s in saldos
+            ) + "."
+        self.db.log_event(
+            tipo="extracto_importado",
+            mensaje=mensaje,
+            detalle={
+                "formato": fmt,
+                "fichero": filename,
+                "nuevos": nuevos,
+                "duplicados": duplicados,
+                "conciliacion": reconciliation_summary,
+                "saldos": saldos,
+            },
+        )
+
         return {
             "formato_detectado": fmt,
             "total_leidos": len(parsed_txs),
             "nuevos_insertados": nuevos,
             "duplicados_omitidos": duplicados,
             "conciliacion_automatica": reconciliation_summary,
+            "saldos_importados": saldos,
         }
+
+    def _store_statement_balances(
+        self,
+        content: Union[bytes, str],
+        filename: str,
+        fmt: str,
+        banco: str,
+        mapping: Optional[Union[CSVMappingConfig, Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Lee el saldo final del extracto (si lo trae) y lo guarda por cuenta y fecha."""
+        try:
+            if fmt == "norma43":
+                saldos = parse_norma43_balances(content, banco_default=banco)
+            elif fmt == "camt053":
+                saldos = parse_camt053_balances(content, banco_default=banco)
+            else:
+                saldos = parse_csv_balance(content, filename=filename, mapping=mapping, banco_default=banco)
+        except Exception as exc:
+            logger.warning("No se pudo leer el saldo del extracto %s: %s", filename, exc)
+            return []
+        for s in saldos:
+            self.db.upsert_bank_balance(
+                cuenta=s["cuenta"],
+                fecha_saldo=s["fecha_saldo"],
+                saldo=s["saldo"],
+                banco=s.get("banco") or banco,
+                moneda=s.get("moneda") or "EUR",
+                origen_fichero=filename,
+            )
+        return saldos
 
     def run_auto_reconciliation(self) -> Dict[str, int]:
         """
@@ -115,11 +191,11 @@ class BankReconciliationService:
                 "SELECT DISTINCT factura_id FROM vinculos_conciliacion WHERE confirmado = 0"
             ).fetchall()
         already_proposed_ids = {int(r["factura_id"]) for r in proposed_rows}
+        # Todas las facturas pendientes o parciales (sin límite arbitrario); los albaranes no se pagan
         candidate_invoices = [
             inv
-            for inv in self.db.list_invoices(limit=1000)
-            if inv.get("estado_pago") != "pagada"
-            and inv["id"] not in already_proposed_ids
+            for inv in self.db.list_unpaid_invoices()
+            if inv["id"] not in already_proposed_ids
             and abs(float(inv.get("importe_pendiente") or 0.0)) >= 0.01
         ]
         rules = [
@@ -287,15 +363,83 @@ class BankReconciliationService:
 
         return None
 
+    # -----------------------------------------------------------------
+    # Comprobaciones comunes (dentro de la misma transacción)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _remaining_for_invoice(conn: Any, invoice_id: int, exclude_movement_id: int) -> Tuple[Dict[str, Any], float]:
+        """Factura y lo que le queda por pagar sin contar los vínculos del propio movimiento."""
+        inv = conn.execute(
+            "SELECT id, numero_factura, proveedor_nombre, total, tipo_documento FROM facturas WHERE id = ?",
+            (invoice_id,),
+        ).fetchone()
+        if not inv:
+            raise ReconciliationNotFound(f"La factura {invoice_id} no existe.")
+        paid = conn.execute(
+            """
+            SELECT COALESCE(SUM(importe_asignado), 0.0) AS pagado FROM vinculos_conciliacion
+            WHERE factura_id = ? AND confirmado = 1 AND movimiento_id != ?
+            """,
+            (invoice_id, exclude_movement_id),
+        ).fetchone()
+        return dict(inv), round(float(inv["total"] or 0.0) - float(paid["pagado"] or 0.0), 2)
+
+    @staticmethod
+    def _check_amount(inv: Dict[str, Any], remaining: float, amount: float) -> None:
+        etiqueta = f"{inv.get('numero_factura') or '#' + str(inv['id'])} de {inv.get('proveedor_nombre') or 'proveedor'}"
+        if abs(amount) < 0.005:
+            raise ReconciliationError(f"El importe asignado a la factura {etiqueta} no puede ser 0.")
+        if abs(remaining) < 0.01:
+            raise ReconciliationError(f"La factura {etiqueta} ya está pagada del todo por otro movimiento del banco.")
+        if (amount > 0) != (remaining > 0) or abs(amount) > abs(remaining) + 0.01:
+            raise ReconciliationError(
+                f"El importe asignado a la factura {etiqueta} ({amount:.2f} €) es mayor que lo que le queda "
+                f"por pagar ({remaining:.2f} €)."
+            )
+
+    @staticmethod
+    def _drop_conflicting_proposals(conn: Any, invoice_ids: List[int], movimiento_id: int) -> List[int]:
+        """Quita las propuestas sin confirmar de esas facturas en otros movimientos (que quedan pendientes)."""
+        touched: set[int] = set()
+        for inv_id in invoice_ids:
+            for r in conn.execute(
+                "SELECT DISTINCT movimiento_id FROM vinculos_conciliacion WHERE factura_id = ? AND confirmado = 0 AND movimiento_id != ?",
+                (inv_id, movimiento_id),
+            ).fetchall():
+                touched.add(int(r["movimiento_id"]))
+        for mov_id in touched:
+            # La propuesta de ese movimiento era un conjunto: se descarta entera y vuelve a 'pendiente'
+            conn.execute("DELETE FROM vinculos_conciliacion WHERE movimiento_id = ? AND confirmado = 0", (mov_id,))
+            if conn.execute(
+                "SELECT 1 FROM vinculos_conciliacion WHERE movimiento_id = ? LIMIT 1", (mov_id,)
+            ).fetchone() is None:
+                conn.execute(
+                    "UPDATE movimientos_bancarios SET estado_conciliacion = 'pendiente', diferencia_pendiente = 0.0 WHERE id = ?",
+                    (mov_id,),
+                )
+        return sorted(touched)
+
     def confirm_proposal(self, movimiento_id: int) -> Dict[str, Any]:
-        """Confirma los vínculos propuestos para un movimiento bancario."""
-        affected_invoices: List[int] = []
+        """
+        Confirma los vínculos propuestos de un movimiento, comprobando de nuevo que cada factura
+        sigue teniendo ese importe pendiente (una propuesta antigua no puede pagar dos veces).
+        """
         with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            mov = conn.execute("SELECT id FROM movimientos_bancarios WHERE id = ?", (movimiento_id,)).fetchone()
+            if not mov:
+                raise ReconciliationNotFound(f"El movimiento bancario {movimiento_id} no existe.")
             rows = conn.execute(
-                "SELECT factura_id FROM vinculos_conciliacion WHERE movimiento_id = ?",
+                "SELECT factura_id, importe_asignado FROM vinculos_conciliacion WHERE movimiento_id = ? AND confirmado = 0",
                 (movimiento_id,),
             ).fetchall()
+            if not rows:
+                raise ReconciliationError("Este movimiento no tiene ninguna propuesta pendiente de confirmar.")
             affected_invoices = [int(r["factura_id"]) for r in rows]
+            for r in rows:
+                inv, remaining = self._remaining_for_invoice(conn, int(r["factura_id"]), movimiento_id)
+                self._check_amount(inv, remaining, float(r["importe_asignado"]))
             conn.execute(
                 "UPDATE vinculos_conciliacion SET confirmado = 1 WHERE movimiento_id = ?",
                 (movimiento_id,),
@@ -304,16 +448,25 @@ class BankReconciliationService:
                 "UPDATE movimientos_bancarios SET estado_conciliacion = 'conciliado' WHERE id = ?",
                 (movimiento_id,),
             )
+            released = self._drop_conflicting_proposals(conn, affected_invoices, movimiento_id)
 
         for inv_id in affected_invoices:
             self.db.recalculate_invoice_payment_status(inv_id)
 
-        return {"movimiento_id": movimiento_id, "estado": "conciliado", "facturas_actualizadas": affected_invoices}
+        return {
+            "movimiento_id": movimiento_id,
+            "estado": "conciliado",
+            "facturas_actualizadas": affected_invoices,
+            "propuestas_descartadas_en_movimientos": released,
+        }
 
     def reject_proposal(self, movimiento_id: int) -> Dict[str, Any]:
         """Descarta una propuesta o desvincula un movimiento bancario dejándolo pendiente."""
         affected_invoices: List[int] = []
         with self.db.connect() as conn:
+            mov = conn.execute("SELECT id FROM movimientos_bancarios WHERE id = ?", (movimiento_id,)).fetchone()
+            if not mov:
+                raise ReconciliationNotFound(f"El movimiento bancario {movimiento_id} no existe.")
             rows = conn.execute(
                 "SELECT factura_id FROM vinculos_conciliacion WHERE movimiento_id = ?",
                 (movimiento_id,),
@@ -345,46 +498,86 @@ class BankReconciliationService:
         aprender_regla: bool = True,
     ) -> Dict[str, Any]:
         """
-        Emparejamiento manual muchos-a-muchos (Sección 8):
-        - El usuario selecciona un movimiento y marca las facturas que lo componen (o un pago parcial).
-        - La app comprueba si la suma cuadra con el movimiento.
-        - Si hay diferencia (por ejemplo por un descuento o abono), permite guardar igualmente
-          y anota la diferencia como pendiente (`diferencia_pendiente`).
+        Emparejamiento manual muchos-a-muchos (Sección 8), en una sola transacción:
+        - Comprueba que el movimiento y las facturas existen (si no, ReconciliationNotFound).
+        - Cada importe no puede superar lo que le queda por pagar a la factura (ReconciliationError).
+        - Si la suma no cuadra con el movimiento (descuento, abono...), se guarda igualmente y se anota
+          la diferencia como pendiente (`diferencia_pendiente`).
+        - Las propuestas sin confirmar de esas facturas en otros movimientos se descartan.
         """
+        if not asignaciones:
+            raise ReconciliationError("Marca al menos una factura para unir con el movimiento.")
+        clean: Dict[int, float] = {}
+        for a in asignaciones:
+            try:
+                inv_id = int(a["factura_id"])
+                amount = round(float(a["importe_asignado"]), 2)
+            except (KeyError, TypeError, ValueError):
+                raise ReconciliationError("Cada factura debe llevar su número y un importe válido.")
+            if amount != amount or amount in (float("inf"), float("-inf")):
+                raise ReconciliationError("Importe no válido.")
+            clean[inv_id] = round(clean.get(inv_id, 0.0) + amount, 2)
+
+        now = _now_iso()
         with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             tx_row = conn.execute(
                 "SELECT * FROM movimientos_bancarios WHERE id = ?", (movimiento_id,)
             ).fetchone()
             if not tx_row:
-                raise ValueError(f"Movimiento bancario {movimiento_id} no encontrado.")
+                raise ReconciliationNotFound(f"Movimiento bancario {movimiento_id} no encontrado.")
             tx = dict(tx_row)
+            first_inv: Optional[Dict[str, Any]] = None
+            for inv_id, amount in clean.items():
+                inv, remaining = self._remaining_for_invoice(conn, inv_id, movimiento_id)
+                self._check_amount(inv, remaining, amount)
+                first_inv = first_inv or inv
 
-        tx_amount = float(tx["importe"])
-        expected_net_invoices = round(-tx_amount, 2)
-        assigned_sum = round(sum(float(a["importe_asignado"]) for a in asignaciones), 2)
-        diferencia = round(expected_net_invoices - assigned_sum, 2)
+            previous_invoice_ids = [
+                int(r["factura_id"])
+                for r in conn.execute(
+                    "SELECT factura_id FROM vinculos_conciliacion WHERE movimiento_id = ?", (movimiento_id,)
+                ).fetchall()
+            ]
+            tx_amount = float(tx["importe"])
+            assigned_sum = round(sum(clean.values()), 2)
+            diferencia = round(-tx_amount - assigned_sum, 2)
 
-        self._save_reconciliation_links(
-            movimiento_id=movimiento_id,
-            allocations=asignaciones,
-            tipo_vinculo="manual",
-            confianza=1.0,
-            confirmado=True,
-            diferencia_pendiente=diferencia,
-            notas=notas,
-        )
+            conn.execute("DELETE FROM vinculos_conciliacion WHERE movimiento_id = ?", (movimiento_id,))
+            for inv_id, amount in clean.items():
+                conn.execute(
+                    """
+                    INSERT INTO vinculos_conciliacion
+                    (movimiento_id, factura_id, importe_asignado, tipo_vinculo, confianza, confirmado, created_at)
+                    VALUES (?, ?, ?, 'manual', 1.0, 1, ?)
+                    """,
+                    (movimiento_id, inv_id, amount, now),
+                )
+            conn.execute(
+                """
+                UPDATE movimientos_bancarios
+                SET estado_conciliacion = 'conciliado', diferencia_pendiente = ?,
+                    notas = CASE WHEN ? != '' THEN ? ELSE notas END
+                WHERE id = ?
+                """,
+                (diferencia, notas, notas, movimiento_id),
+            )
+            self._drop_conflicting_proposals(conn, list(clean.keys()), movimiento_id)
 
-        # Aprender regla concepto -> proveedor si todas las facturas pertenecen al mismo proveedor
-        if aprender_regla and asignaciones:
-            first_inv = self.db.get_invoice_by_id(int(asignaciones[0]["factura_id"]))
+        for inv_id in sorted(set(previous_invoice_ids) | set(clean.keys())):
+            self.db.recalculate_invoice_payment_status(inv_id)
+
+        # Aprender regla concepto -> proveedor
+        if aprender_regla and first_inv and first_inv.get("proveedor_nombre"):
             concept_key = _extract_reusable_concept_pattern(tx.get("concepto") or "")
-            if first_inv and first_inv.get("proveedor_nombre") and concept_key:
+            full_inv = self.db.get_invoice_by_id(int(first_inv["id"])) or {}
+            if concept_key:
                 self.db.create_rule(
                     tipo_regla="concepto_proveedor",
                     patron=concept_key,
-                    proveedor_id=first_inv.get("proveedor_id"),
+                    proveedor_id=full_inv.get("proveedor_id"),
                     proveedor_nombre=first_inv["proveedor_nombre"],
-                    categoria=first_inv.get("categoria") or "",
+                    categoria=full_inv.get("categoria") or "",
                     aprendida=True,
                 )
 

@@ -20,8 +20,9 @@ from urllib.parse import urlencode
 
 import httpx
 
-from app.config import DEFAULT_HOST, DEFAULT_PORT
+from app.config import DAILY_BACKUPS_TO_KEEP, DEFAULT_HOST, DEFAULT_PORT
 from app.db.database import Database, sender_matches_pattern
+from app.services.activity import generate_due_date_notice, record_heartbeat
 from app.services.credentials import CredentialManager
 from app.services.pdf_extractor import extract_pdf_content, looks_like_invoice
 from app.services.pipeline import InvoiceIngestionPipeline
@@ -425,6 +426,14 @@ class OAuth2MailConnector(MailConnector):
                 pass
 
 
+WORKER_TICK_SECONDS = 60
+
+
+def _last_attempt_failed_connection(account: Dict[str, Any]) -> bool:
+    """La última revisión no pudo entrar en el buzón (su última revisión correcta es anterior)."""
+    return (account.get("ultima_sincronizacion_ok") or "") != (account.get("ultima_sincronizacion") or "")
+
+
 class MailPollerService:
     """
     Servicio de consulta periódica de buzones de correo, filtrado de candidatas
@@ -536,6 +545,15 @@ class MailPollerService:
         except Exception as exc:
             err_msg = f"Error conectando a {account['email']}: {exc}"
             logger.warning(err_msg)
+            # Solo se avisa cuando el error es nuevo, para no repetir el mismo aviso en cada vuelta
+            if (account.get("ultimo_error") or "") != str(exc) or not _last_attempt_failed_connection(account):
+                self.db.log_event(
+                    tipo="error_correo",
+                    nivel="error",
+                    mensaje=f"No se pudo entrar en el correo {account['email']}: {exc}"[:500],
+                    entidad="cuenta_correo",
+                    entidad_id=account_id,
+                )
             self.db.update_mail_account_sync_status(account_id, error=str(exc))
             stats["errores"].append(err_msg)
             return stats
@@ -632,13 +650,79 @@ class MailPollerService:
             if not processed_any:
                 stats["mensajes_descartados"] += 1
 
-        self.db.update_mail_account_sync_status(account_id, error=None)
+        # La conexión fue bien; si algún correo falló, se deja constancia sin dar el buzón por caído
+        pendientes_error = self.db.count_error_messages(account_id)
+        error_resumen = (
+            f"{pendientes_error} correo(s) con adjuntos que no se pudieron procesar." if pendientes_error else None
+        )
+        self.db.update_mail_account_sync_status(account_id, error=error_resumen, conexion_ok=True)
+        self._log_sync_summary(account, stats)
         return stats
 
-    def sync_all_active_accounts(self) -> List[Dict[str, Any]]:
-        """Sincroniza todas las cuentas de correo activas de forma segura."""
+    def _log_sync_summary(self, account: Dict[str, Any], stats: Dict[str, Any]) -> None:
+        """Resumen de la revisión de un buzón; si no ha pasado nada no se anota (basta la hora de revisión)."""
+        email_addr = account.get("email") or ""
+        nuevos = int(stats.get("mensajes_nuevos") or 0)
+        facturas = int(stats.get("facturas_insertadas") or 0)
+        errores = stats.get("errores") or []
+        if account.get("ultimo_error") and _last_attempt_failed_connection(account):
+            self.db.log_event(
+                tipo="correo_revisado",
+                mensaje=f"Se ha recuperado la conexión con el correo {email_addr}.",
+                entidad="cuenta_correo",
+                entidad_id=account.get("id"),
+            )
+        if not nuevos and not facturas and not errores:
+            return
+        mensaje = (
+            f"Correo {email_addr} revisado: {nuevos} mensaje(s) nuevo(s), "
+            f"{facturas} factura(s) nueva(s), {len(errores)} error(es)."
+        )
+        self.db.log_event(
+            tipo="error_correo" if errores else "correo_revisado",
+            nivel="error" if errores else "info",
+            mensaje=mensaje,
+            detalle={
+                "mensajes_nuevos": nuevos,
+                "facturas_insertadas": facturas,
+                "facturas_duplicadas": stats.get("facturas_duplicadas", 0),
+                "mensajes_descartados": stats.get("mensajes_descartados", 0),
+                "errores": errores[:20],
+            },
+            entidad="cuenta_correo",
+            entidad_id=account.get("id"),
+        )
+
+    def account_interval_minutes(self, account: Dict[str, Any]) -> int:
+        """Intervalo de revisión del buzón: el suyo si lo tiene; si no, el general (mínimo 5 minutos)."""
+        for raw in (account.get("intervalo_minutos"), self.db.get_setting("intervalo_correo_minutos", 15)):
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return max(5, min(value, 1440))
+        return 15
+
+    def _account_is_due(self, account: Dict[str, Any], now: dt.datetime) -> bool:
+        last = account.get("ultima_sincronizacion")
+        if not last:
+            return True
+        try:
+            last_dt = dt.datetime.fromisoformat(str(last))
+        except ValueError:
+            return True
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=dt.timezone.utc)
+        return (now - last_dt).total_seconds() >= self.account_interval_minutes(account) * 60 - 5
+
+    def sync_all_active_accounts(self, only_due: bool = False) -> List[Dict[str, Any]]:
+        """Sincroniza las cuentas activas (con only_due, solo las que ya toca revisar según su intervalo)."""
         with self._lock:
             accounts = self.db.list_mail_accounts(active_only=True)
+            if only_due:
+                now = dt.datetime.now(dt.timezone.utc)
+                accounts = [a for a in accounts if self._account_is_due(a, now)]
             results: List[Dict[str, Any]] = []
             for acc in accounts:
                 try:
@@ -647,6 +731,13 @@ class MailPollerService:
                     # Un fallo en una cuenta no impide revisar las demás
                     err_msg = f"Error sincronizando {acc.get('email')}: {exc}"
                     logger.error(err_msg)
+                    self.db.log_event(
+                        tipo="error_correo",
+                        nivel="error",
+                        mensaje=f"Fallo inesperado revisando el correo {acc.get('email')}: {exc}"[:500],
+                        entidad="cuenta_correo",
+                        entidad_id=acc.get("id"),
+                    )
                     try:
                         self.db.update_mail_account_sync_status(int(acc["id"]), error=str(exc))
                     except Exception:
@@ -677,20 +768,40 @@ class MailPollerService:
         self._thread.start()
         logger.info("Proceso de vigilancia de correo en segundo plano iniciado.")
 
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
     def stop_background_worker(self) -> None:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
 
     def _worker_loop(self) -> None:
+        """
+        Vuelta del vigilante cada minuto: latido, revisión de los buzones a los que les toca, aviso diario
+        de vencimientos y copia de seguridad diaria. Ningún error puede detener el hilo.
+        """
         while not self._stop_event.is_set():
             try:
-                if self.db.get_setting("poller_activo", True):
-                    self.sync_all_active_accounts()
+                record_heartbeat(self.db)
+                activo = True
+                try:
+                    activo = bool(self.db.get_setting("poller_activo", True))
+                except Exception:
+                    activo = True
+                if activo:
+                    self.sync_all_active_accounts(only_due=True)
+                generate_due_date_notice(self.db)
+                self.db.create_daily_backup_if_needed(keep=DAILY_BACKUPS_TO_KEEP)
             except Exception as exc:
                 logger.error("Error en ciclo del worker de correo: %s", exc)
-
-            interval_mins = int(self.db.get_setting("intervalo_correo_minutos", 15) or 15)
-            wait_seconds = max(30, interval_mins * 60)
-            if self._stop_event.wait(timeout=wait_seconds):
+                try:
+                    self.db.log_event(
+                        tipo="error_correo",
+                        nivel="error",
+                        mensaje=f"Fallo en la revisión automática (se reintentará en un minuto): {exc}"[:500],
+                    )
+                except Exception:
+                    pass
+            if self._stop_event.wait(timeout=WORKER_TICK_SECONDS):
                 break

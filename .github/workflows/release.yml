@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag de la release donde subir los ejecutables (ej. v0.1.1)"
+        description: "Tag de la release donde subir los ejecutables (ej. v0.1.2)"
         required: true
-        default: "v0.1.1"
+        default: "v0.1.2"
   push:
     tags:
       - "v*"

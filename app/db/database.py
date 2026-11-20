@@ -8,7 +8,7 @@ import logging
 import re
 import shutil
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -182,7 +182,57 @@ MIGRATIONS: List[Tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_facturas_sustituida_por ON facturas(sustituida_por);
         """,
     ),
+    (
+        3,
+        "Registro de actividad y avisos, saldos bancarios de los extractos y plazo de pago por proveedor",
+        """
+        CREATE TABLE IF NOT EXISTS eventos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT NOT NULL,
+            nivel TEXT NOT NULL DEFAULT 'info',
+            tipo TEXT NOT NULL,
+            mensaje TEXT NOT NULL,
+            detalle_json TEXT NOT NULL DEFAULT '{}',
+            entidad TEXT,
+            entidad_id INTEGER,
+            leido INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_eventos_fecha ON eventos(fecha);
+        CREATE INDEX IF NOT EXISTS idx_eventos_leido ON eventos(leido);
+
+        CREATE TABLE IF NOT EXISTS saldos_bancarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            banco TEXT NOT NULL DEFAULT '',
+            cuenta TEXT NOT NULL,
+            fecha_saldo TEXT NOT NULL,
+            saldo REAL NOT NULL,
+            moneda TEXT NOT NULL DEFAULT 'EUR',
+            origen_fichero TEXT DEFAULT '',
+            importado_en TEXT NOT NULL,
+            UNIQUE(cuenta, fecha_saldo)
+        );
+
+        ALTER TABLE proveedores ADD COLUMN plazo_pago_dias INTEGER;
+        ALTER TABLE cuentas_correo ADD COLUMN ultima_sincronizacion_ok TEXT;
+        """,
+    ),
+    (
+        4,
+        "Reintentos de correos con error al procesar sus adjuntos",
+        """
+        ALTER TABLE mensajes_procesados ADD COLUMN intentos INTEGER NOT NULL DEFAULT 1;
+        CREATE INDEX IF NOT EXISTS idx_mensajes_estado ON mensajes_procesados(cuenta_id, estado);
+        """,
+    ),
 ]
+
+# Un correo cuyo adjunto falló se vuelve a intentar hasta este número de veces
+MAX_MESSAGE_ATTEMPTS = 3
+
+# Condición SQL reutilizable: facturas que cuentan como gasto/pago (no albaranes ni sustituidas)
+ACTIVE_INVOICE_SQL = "sustituida_por IS NULL AND tipo_documento != 'albaran'"
+
+EVENT_LEVELS = ("info", "aviso", "error")
 
 
 def sender_matches_pattern(pattern: Optional[str], sender_email: Optional[str]) -> bool:
@@ -272,12 +322,39 @@ class Database:
         if not self.db_path.exists() or self.db_path.stat().st_size == 0:
             return None
         timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         backup_file = self.backup_dir / f"facturas_backup_{reason}_{timestamp}.sqlite"
-        with sqlite3.connect(str(self.db_path)) as src_conn:
-            with sqlite3.connect(str(backup_file)) as dst_conn:
+        # 'with sqlite3.connect' solo confirma la transacción, no cierra: se cierra explícitamente
+        with closing(sqlite3.connect(str(self.db_path))) as src_conn:
+            with closing(sqlite3.connect(str(backup_file))) as dst_conn:
                 src_conn.backup(dst_conn)
         logger.info("Copia de seguridad de base de datos creada en %s", backup_file)
         return backup_file
+
+    def create_daily_backup_if_needed(self, keep: int = 14, today: Optional[dt.date] = None) -> Optional[Path]:
+        """
+        Copia de seguridad automática diaria (una al día, la primera vez que el programa está en marcha).
+        Conserva las últimas `keep` copias diarias; las previas a migraciones y las manuales no se tocan.
+        """
+        today_iso = (today or dt.date.today()).isoformat()
+        if self.get_setting("ultima_copia_diaria", "") == today_iso:
+            return None
+        backup = self.create_backup(reason="diaria")
+        self.set_settings({"ultima_copia_diaria": today_iso})
+        dailies = sorted(self.backup_dir.glob("facturas_backup_diaria_*.sqlite"))
+        for old in dailies[:-keep] if keep > 0 else []:
+            try:
+                old.unlink()
+            except OSError as exc:
+                logger.warning("No se pudo borrar la copia antigua %s: %s", old, exc)
+        if backup is not None:
+            self.log_event(
+                tipo="copia_seguridad",
+                mensaje=f"Copia de seguridad diaria guardada en {backup}.",
+                detalle={"ruta": str(backup), "automatica": True},
+                leido=True,
+            )
+        return backup
 
     def initialize_and_migrate(self) -> None:
         """Aplica migraciones pendientes realizando copia de seguridad previa si la base ya existe."""
@@ -787,11 +864,84 @@ class Database:
         fecha_desde: Optional[str] = None,
         fecha_hasta: Optional[str] = None,
         busqueda: Optional[str] = None,
-        limit: int = 500,
+        limit: Optional[int] = 500,
         incluir_sustituidas: bool = False,
+        offset: int = 0,
+        tipo_documento: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """Lista facturas filtradas. `limit=None` devuelve todas (sin recortes silenciosos)."""
+        where, params = self._invoice_filters(
+            estado_revision=estado_revision,
+            estado_pago=estado_pago,
+            categoria=categoria,
+            proveedor=proveedor,
+            mes=mes,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            busqueda=busqueda,
+            incluir_sustituidas=incluir_sustituidas,
+            tipo_documento=tipo_documento,
+        )
+        sql = f"""
+            SELECT f.*,
+                   COALESCE((
+                       SELECT SUM(vc.importe_asignado)
+                       FROM vinculos_conciliacion vc
+                       WHERE vc.factura_id = f.id AND vc.confirmado = 1
+                   ), 0.0) AS importe_conciliado
+            FROM facturas f
+            WHERE {where}
+            ORDER BY COALESCE(f.fecha_emision, f.created_at) DESC, f.id DESC
+        """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = params + [int(limit), max(0, int(offset or 0))]
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+            return [self._deserialize_invoice_row(r) for r in rows]
+
+    def count_invoices(self, **filters: Any) -> int:
+        where, params = self._invoice_filters(**filters)
+        with self.connect() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) AS n FROM facturas f WHERE {where}", params).fetchone()["n"])
+
+    def list_unpaid_invoices(self) -> List[Dict[str, Any]]:
+        """Todas las facturas activas pendientes o parciales (candidatas a conciliar), sin límite."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT f.*,
+                       COALESCE((
+                           SELECT SUM(vc.importe_asignado) FROM vinculos_conciliacion vc
+                           WHERE vc.factura_id = f.id AND vc.confirmado = 1
+                       ), 0.0) AS importe_conciliado
+                FROM facturas f
+                WHERE f.sustituida_por IS NULL AND f.tipo_documento != 'albaran' AND f.estado_pago != 'pagada'
+                ORDER BY COALESCE(f.fecha_vencimiento, f.fecha_emision, f.created_at) ASC, f.id ASC
+                """
+            ).fetchall()
+            return [self._deserialize_invoice_row(r) for r in rows]
+
+    @staticmethod
+    def _invoice_filters(
+        estado_revision: Optional[str] = None,
+        estado_pago: Optional[str] = None,
+        categoria: Optional[str] = None,
+        proveedor: Optional[str] = None,
+        mes: Optional[str] = None,
+        fecha_desde: Optional[str] = None,
+        fecha_hasta: Optional[str] = None,
+        busqueda: Optional[str] = None,
+        incluir_sustituidas: bool = False,
+        tipo_documento: Optional[str] = None,
+    ) -> Tuple[str, List[Any]]:
         clauses: List[str] = ["1=1"]
         params: List[Any] = []
+        if tipo_documento == "_sin_albaranes":
+            clauses.append("f.tipo_documento != 'albaran'")
+        elif tipo_documento:
+            clauses.append("f.tipo_documento = ?")
+            params.append(tipo_documento)
 
         # Las facturas sustituidas por otra (mismo proveedor y número) se ocultan por defecto
         if not incluir_sustituidas:
@@ -825,23 +975,7 @@ class Database:
                 "OR LOWER(f.nif) LIKE ? OR LOWER(f.notas) LIKE ?)"
             )
             params.extend([q, q, q, q])
-
-        params.append(limit)
-        sql = f"""
-            SELECT f.*,
-                   COALESCE((
-                       SELECT SUM(vc.importe_asignado)
-                       FROM vinculos_conciliacion vc
-                       WHERE vc.factura_id = f.id AND vc.confirmado = 1
-                   ), 0.0) AS importe_conciliado
-            FROM facturas f
-            WHERE {' AND '.join(clauses)}
-            ORDER BY COALESCE(f.fecha_emision, f.created_at) DESC, f.id DESC
-            LIMIT ?
-        """
-        with self.connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-            return [self._deserialize_invoice_row(r) for r in rows]
+        return " AND ".join(clauses), params
 
     def _deserialize_invoice_row(self, row: sqlite3.Row) -> Dict[str, Any]:
         d = dict(row)
@@ -937,6 +1071,13 @@ class Database:
                     item["remitentes_permitidos"] = []
                 item["usar_ssl"] = bool(item.get("usar_ssl"))
                 item["activa"] = bool(item.get("activa"))
+                item["mensajes_con_error"] = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS n FROM mensajes_procesados WHERE cuenta_id = ? AND estado = 'error'",
+                        (item["id"],),
+                    ).fetchone()["n"]
+                    or 0
+                )
                 result.append(item)
             return result
 
@@ -946,26 +1087,54 @@ class Database:
             return cur.rowcount > 0
 
     def update_mail_account_sync_status(
-        self, account_id: int, error: Optional[str] = None
+        self, account_id: int, error: Optional[str] = None, conexion_ok: Optional[bool] = None
     ) -> None:
+        """
+        Guarda el resultado de revisar un buzón. `conexion_ok` indica si se pudo entrar en el buzón
+        (por defecto, si no hay error). Un error al procesar adjuntos con la conexión correcta deja
+        constancia en `ultimo_error` sin dar el buzón por caído.
+        """
         now = _now_iso()
+        ok = (error is None) if conexion_ok is None else bool(conexion_ok)
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE cuentas_correo
-                SET ultima_sincronizacion = ?, ultimo_error = ?
+                SET ultima_sincronizacion = ?, ultimo_error = ?,
+                    ultima_sincronizacion_ok = CASE WHEN ? THEN ? ELSE ultima_sincronizacion_ok END
                 WHERE id = ?
                 """,
-                (now, error, account_id),
+                (now, error, 1 if ok else 0, now, account_id),
             )
 
     def is_message_processed(self, cuenta_id: int, message_id: str) -> bool:
+        """Un correo ya visto no se vuelve a procesar, salvo si falló y le quedan reintentos."""
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT id FROM mensajes_procesados WHERE cuenta_id = ? AND message_id = ? LIMIT 1",
+                "SELECT estado, intentos FROM mensajes_procesados WHERE cuenta_id = ? AND message_id = ? LIMIT 1",
                 (cuenta_id, message_id),
             ).fetchone()
-            return row is not None
+            if row is None:
+                return False
+            if row["estado"] == "error" and int(row["intentos"] or 0) < MAX_MESSAGE_ATTEMPTS:
+                return False
+            return True
+
+    def count_error_messages(self, cuenta_id: int) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM mensajes_procesados WHERE cuenta_id = ? AND estado = 'error'",
+                (cuenta_id,),
+            ).fetchone()
+            return int(row["n"] or 0)
+
+    def reset_error_messages(self, cuenta_id: int) -> int:
+        """Da otra tanda de reintentos a los correos con error de un buzón."""
+        with self.connect() as conn:
+            return conn.execute(
+                "UPDATE mensajes_procesados SET intentos = 0 WHERE cuenta_id = ? AND estado = 'error'",
+                (cuenta_id,),
+            ).rowcount
 
     def mark_message_processed(
         self,
@@ -981,10 +1150,15 @@ class Database:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO mensajes_procesados (
+                INSERT INTO mensajes_procesados (
                     cuenta_id, message_id, uid_imap, remitente, asunto,
                     fecha_mensaje, estado, detalle, procesado_en
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cuenta_id, message_id) DO UPDATE SET
+                    estado = excluded.estado,
+                    detalle = excluded.detalle,
+                    procesado_en = excluded.procesado_en,
+                    intentos = mensajes_procesados.intentos + 1
                 """,
                 (
                     cuenta_id,
@@ -1043,12 +1217,10 @@ class Database:
             )
             return int(cur.lastrowid), True
 
-    def list_bank_transactions(
-        self,
-        estado_conciliacion: Optional[str] = None,
-        banco: Optional[str] = None,
-        limit: int = 500,
-    ) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _bank_filters(
+        estado_conciliacion: Optional[str] = None, banco: Optional[str] = None, mes: Optional[str] = None
+    ) -> Tuple[str, List[Any]]:
         clauses = ["1=1"]
         params: List[Any] = []
         if estado_conciliacion:
@@ -1057,15 +1229,37 @@ class Database:
         if banco:
             clauses.append("LOWER(m.banco) = LOWER(?)")
             params.append(banco)
-        params.append(limit)
+        if mes:
+            clauses.append("strftime('%Y-%m', m.fecha) = ?")
+            params.append(mes)
+        return " AND ".join(clauses), params
 
+    def count_bank_transactions(self, **filters: Any) -> int:
+        where, params = self._bank_filters(**filters)
+        with self.connect() as conn:
+            return int(
+                conn.execute(f"SELECT COUNT(*) AS n FROM movimientos_bancarios m WHERE {where}", params).fetchone()["n"]
+            )
+
+    def list_bank_transactions(
+        self,
+        estado_conciliacion: Optional[str] = None,
+        banco: Optional[str] = None,
+        limit: Optional[int] = 500,
+        offset: int = 0,
+        mes: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Movimientos del banco filtrados. `limit=None` devuelve todos."""
+        where, params = self._bank_filters(estado_conciliacion=estado_conciliacion, banco=banco, mes=mes)
         sql = f"""
             SELECT m.*
             FROM movimientos_bancarios m
-            WHERE {' AND '.join(clauses)}
+            WHERE {where}
             ORDER BY m.fecha DESC, m.id DESC
-            LIMIT ?
         """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = params + [int(limit), max(0, int(offset or 0))]
         with self.connect() as conn:
             txs = [dict(r) for r in conn.execute(sql, params).fetchall()]
             for tx in txs:
@@ -1140,6 +1334,275 @@ class Database:
             return nuevo_estado
 
     # =====================================================================
+    # Datos de ejemplo
+    # =====================================================================
+
+    def delete_demo_data(self, origen_prefix: str) -> Dict[str, Any]:
+        """
+        Borra las facturas de ejemplo (datos_extra.demo = true), sus vínculos, los movimientos y saldos
+        importados desde los extractos de ejemplo. Devuelve las rutas de PDF para que se borren del archivo.
+        """
+        like = f"{origen_prefix}%"
+        with self.connect() as conn:
+            inv_rows = conn.execute(
+                "SELECT id, ruta_archivo FROM facturas WHERE json_extract(datos_extra_json, '$.demo') = 1"
+            ).fetchall()
+            inv_ids = [int(r["id"]) for r in inv_rows]
+            mov_ids = [
+                int(r["id"])
+                for r in conn.execute(
+                    "SELECT id FROM movimientos_bancarios WHERE origen_archivo LIKE ?", (like,)
+                ).fetchall()
+            ]
+            affected_invoices: set[int] = set()
+            affected_movs: set[int] = set()
+            for inv_id in inv_ids:
+                for r in conn.execute(
+                    "SELECT movimiento_id FROM vinculos_conciliacion WHERE factura_id = ?", (inv_id,)
+                ).fetchall():
+                    affected_movs.add(int(r["movimiento_id"]))
+                conn.execute("DELETE FROM vinculos_conciliacion WHERE factura_id = ?", (inv_id,))
+            for mov_id in mov_ids:
+                for r in conn.execute(
+                    "SELECT factura_id FROM vinculos_conciliacion WHERE movimiento_id = ?", (mov_id,)
+                ).fetchall():
+                    affected_invoices.add(int(r["factura_id"]))
+                conn.execute("DELETE FROM vinculos_conciliacion WHERE movimiento_id = ?", (mov_id,))
+                conn.execute("DELETE FROM movimientos_bancarios WHERE id = ?", (mov_id,))
+            for inv_id in inv_ids:
+                conn.execute("UPDATE facturas SET sustituida_por = NULL WHERE sustituida_por = ?", (inv_id,))
+                conn.execute("UPDATE facturas SET sustituye_a = NULL WHERE sustituye_a = ?", (inv_id,))
+                conn.execute("DELETE FROM facturas WHERE id = ?", (inv_id,))
+            for mov_id in affected_movs - set(mov_ids):
+                if conn.execute(
+                    "SELECT 1 FROM vinculos_conciliacion WHERE movimiento_id = ? LIMIT 1", (mov_id,)
+                ).fetchone() is None:
+                    conn.execute(
+                        "UPDATE movimientos_bancarios SET estado_conciliacion = 'pendiente', diferencia_pendiente = 0.0 WHERE id = ?",
+                        (mov_id,),
+                    )
+            saldos = conn.execute("DELETE FROM saldos_bancarios WHERE origen_fichero LIKE ?", (like,)).rowcount
+        for inv_id in affected_invoices - set(inv_ids):
+            self.recalculate_invoice_payment_status(inv_id)
+        return {
+            "facturas_borradas": len(inv_ids),
+            "movimientos_borrados": len(mov_ids),
+            "saldos_borrados": saldos,
+            "rutas_pdf": [r["ruta_archivo"] for r in inv_rows if r["ruta_archivo"]],
+        }
+
+    # =====================================================================
+    # Registro de actividad y avisos
+    # =====================================================================
+
+    def log_event(
+        self,
+        tipo: str,
+        mensaje: str,
+        nivel: str = "info",
+        detalle: Optional[Dict[str, Any]] = None,
+        entidad: Optional[str] = None,
+        entidad_id: Optional[int] = None,
+        leido: bool = False,
+    ) -> Optional[int]:
+        """
+        Anota un suceso en el registro de actividad. Nunca lanza excepciones:
+        un fallo al apuntar un aviso no debe interrumpir el trabajo real.
+        """
+        try:
+            nivel_ok = nivel if nivel in EVENT_LEVELS else "info"
+            with self.connect() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO eventos (fecha, nivel, tipo, mensaje, detalle_json, entidad, entidad_id, leido)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _now_iso(),
+                        nivel_ok,
+                        (tipo or "otro").strip(),
+                        (mensaje or "").strip()[:1000],
+                        json.dumps(detalle or {}, ensure_ascii=False, default=str),
+                        entidad,
+                        int(entidad_id) if entidad_id is not None else None,
+                        1 if leido else 0,
+                    ),
+                )
+                return int(cur.lastrowid)
+        except Exception as exc:  # pragma: no cover - defensivo
+            logger.warning("No se pudo anotar el suceso '%s': %s", tipo, exc)
+            return None
+
+    def list_events(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        nivel: Optional[str] = None,
+        tipo: Optional[str] = None,
+        solo_no_leidos: bool = False,
+    ) -> Dict[str, Any]:
+        clauses = ["1=1"]
+        params: List[Any] = []
+        if nivel:
+            clauses.append("nivel = ?")
+            params.append(nivel)
+        if tipo:
+            clauses.append("tipo = ?")
+            params.append(tipo)
+        if solo_no_leidos:
+            clauses.append("leido = 0")
+        where = " AND ".join(clauses)
+        limit = max(1, min(int(limit or 50), 500))
+        offset = max(0, int(offset or 0))
+        with self.connect() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) AS n FROM eventos WHERE {where}", params).fetchone()["n"])
+            rows = conn.execute(
+                f"SELECT * FROM eventos WHERE {where} ORDER BY fecha DESC, id DESC LIMIT ? OFFSET ?",
+                params + [limit, offset],
+            ).fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detalle"] = json.loads(d.pop("detalle_json") or "{}")
+            except Exception:
+                d["detalle"] = {}
+            d["leido"] = bool(d.get("leido"))
+            items.append(d)
+        return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+    def count_unread(self) -> Dict[str, int]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(CASE WHEN nivel IN ('aviso', 'error') THEN 1 ELSE 0 END), 0) AS importantes
+                FROM eventos WHERE leido = 0
+                """
+            ).fetchone()
+        return {"no_leidos": int(row["total"] or 0), "importantes": int(row["importantes"] or 0)}
+
+    def mark_read(self, ids: Optional[List[int]] = None, all_events: bool = False) -> int:
+        with self.connect() as conn:
+            if all_events:
+                return conn.execute("UPDATE eventos SET leido = 1 WHERE leido = 0").rowcount
+            clean_ids = [int(i) for i in (ids or [])]
+            if not clean_ids:
+                return 0
+            marks = ",".join("?" for _ in clean_ids)
+            return conn.execute(f"UPDATE eventos SET leido = 1 WHERE id IN ({marks})", clean_ids).rowcount
+
+    def purge_old_events(self, days: int = 180) -> int:
+        limit_date = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).replace(microsecond=0).isoformat()
+        with self.connect() as conn:
+            return conn.execute("DELETE FROM eventos WHERE fecha < ?", (limit_date,)).rowcount
+
+    def count_recent_events(self, tipo: str, hours: int = 24) -> int:
+        since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)).replace(microsecond=0).isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM eventos WHERE tipo = ? AND fecha >= ?", (tipo, since)
+            ).fetchone()
+        return int(row["n"] or 0)
+
+    # =====================================================================
+    # Saldos bancarios (del último extracto importado)
+    # =====================================================================
+
+    def upsert_bank_balance(
+        self,
+        cuenta: str,
+        fecha_saldo: str,
+        saldo: float,
+        banco: str = "",
+        moneda: str = "EUR",
+        origen_fichero: str = "",
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO saldos_bancarios (banco, cuenta, fecha_saldo, saldo, moneda, origen_fichero, importado_en)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cuenta, fecha_saldo) DO UPDATE SET
+                    banco = excluded.banco,
+                    saldo = excluded.saldo,
+                    moneda = excluded.moneda,
+                    origen_fichero = excluded.origen_fichero,
+                    importado_en = excluded.importado_en
+                """,
+                (
+                    (banco or "").strip(),
+                    (cuenta or "").strip(),
+                    fecha_saldo[:10],
+                    round(float(saldo), 2),
+                    moneda or "EUR",
+                    origen_fichero or "",
+                    _now_iso(),
+                ),
+            )
+
+    def latest_bank_balances(self) -> List[Dict[str, Any]]:
+        """Último saldo conocido de cada cuenta (el de fecha más reciente)."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.* FROM saldos_bancarios s
+                WHERE s.fecha_saldo = (
+                    SELECT MAX(s2.fecha_saldo) FROM saldos_bancarios s2 WHERE s2.cuenta = s.cuenta
+                )
+                ORDER BY s.cuenta ASC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # =====================================================================
+    # Plazo de pago por proveedor y facturas pendientes de pago
+    # =====================================================================
+
+    def get_supplier(self, supplier_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM proveedores WHERE id = ?", (supplier_id,)).fetchone()
+            return dict(row) if row else None
+
+    def set_supplier_payment_term(self, supplier_id: int, dias: Optional[int]) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE proveedores SET plazo_pago_dias = ?, updated_at = ? WHERE id = ?",
+                (dias, _now_iso(), supplier_id),
+            )
+            return cur.rowcount > 0
+
+    def list_invoice_date_pairs(self) -> List[Dict[str, Any]]:
+        """Pares (emisión, vencimiento) por proveedor para aprender su plazo de pago habitual."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT proveedor_id, fecha_emision, fecha_vencimiento FROM facturas
+                WHERE proveedor_id IS NOT NULL AND tipo_documento != 'albaran'
+                  AND fecha_emision IS NOT NULL AND fecha_emision != ''
+                  AND fecha_vencimiento IS NOT NULL AND fecha_vencimiento != ''
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def list_open_payables(self) -> List[Dict[str, Any]]:
+        """Facturas activas (no sustituidas) aún no pagadas del todo, con lo ya pagado en el banco."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT f.id, f.proveedor_id, f.proveedor_nombre, f.numero_factura, f.fecha_emision,
+                       f.fecha_vencimiento, f.total, f.tipo_documento, f.estado_pago,
+                       COALESCE((
+                           SELECT SUM(vc.importe_asignado) FROM vinculos_conciliacion vc
+                           WHERE vc.factura_id = f.id AND vc.confirmado = 1
+                       ), 0.0) AS importe_conciliado
+                FROM facturas f
+                WHERE f.sustituida_por IS NULL AND f.estado_pago != 'pagada' AND f.tipo_documento != 'albaran'
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # =====================================================================
     # Estadísticas y Métricas del Dashboard (Sección 9)
     # =====================================================================
 
@@ -1150,18 +1613,33 @@ class Database:
 
         with self.connect() as conn:
             # Totales globales
+            # Pendiente por factura: total − pagos confirmados. Los abonos restan (negativo) y una factura
+            # pagada de más no resta. Los albaranes no son facturas y no cuentan.
             resumen = conn.execute(
                 """
                 SELECT
-                    COUNT(*) AS total_facturas,
-                    COALESCE(SUM(total), 0.0) AS gasto_total,
-                    COALESCE(SUM(base_imponible), 0.0) AS base_total,
-                    COALESCE(SUM(iva), 0.0) AS iva_total,
+                    SUM(CASE WHEN tipo_documento != 'albaran' THEN 1 ELSE 0 END) AS total_facturas,
+                    COALESCE(SUM(CASE WHEN tipo_documento != 'albaran' THEN total ELSE 0 END), 0.0) AS gasto_total,
+                    COALESCE(SUM(CASE WHEN tipo_documento != 'albaran' THEN base_imponible ELSE 0 END), 0.0) AS base_total,
+                    COALESCE(SUM(CASE WHEN tipo_documento != 'albaran' THEN iva ELSE 0 END), 0.0) AS iva_total,
                     SUM(CASE WHEN estado_revision = 'pendiente_revision' THEN 1 ELSE 0 END) AS pendientes_revision,
-                    SUM(CASE WHEN estado_pago != 'pagada' THEN 1 ELSE 0 END) AS facturas_impagadas,
-                    COALESCE(SUM(CASE WHEN estado_pago != 'pagada' THEN total ELSE 0.0 END), 0.0) AS importe_pendiente_pago
-                FROM facturas
-                WHERE sustituida_por IS NULL
+                    SUM(CASE WHEN tipo_documento = 'albaran' THEN 1 ELSE 0 END) AS albaranes,
+                    SUM(CASE WHEN tipo_documento NOT IN ('albaran', 'abono') AND estado_pago != 'pagada'
+                             AND total - conciliado > 0.01 THEN 1 ELSE 0 END) AS facturas_impagadas,
+                    COALESCE(SUM(CASE
+                        WHEN tipo_documento = 'albaran' OR estado_pago = 'pagada' THEN 0.0
+                        WHEN tipo_documento = 'abono' THEN -ABS(total - conciliado)
+                        WHEN total - conciliado > 0 THEN total - conciliado
+                        ELSE 0.0 END), 0.0) AS importe_pendiente_pago
+                FROM (
+                    SELECT f.*,
+                           COALESCE((
+                               SELECT SUM(vc.importe_asignado) FROM vinculos_conciliacion vc
+                               WHERE vc.factura_id = f.id AND vc.confirmado = 1
+                           ), 0.0) AS conciliado
+                    FROM facturas f
+                    WHERE f.sustituida_por IS NULL
+                )
                 """
             ).fetchone()
 
@@ -1176,7 +1654,7 @@ class Database:
                            ROUND(SUM(iva), 2) AS iva,
                            ROUND(SUM(total), 2) AS total
                     FROM facturas
-                    WHERE sustituida_por IS NULL
+                    WHERE sustituida_por IS NULL AND tipo_documento != 'albaran'
                     GROUP BY mes
                     ORDER BY mes DESC
                     LIMIT 12
@@ -1193,7 +1671,7 @@ class Database:
                            COUNT(*) AS cantidad,
                            ROUND(SUM(total), 2) AS total
                     FROM facturas
-                    WHERE sustituida_por IS NULL
+                    WHERE sustituida_por IS NULL AND tipo_documento != 'albaran'
                     GROUP BY categoria
                     ORDER BY total DESC
                     """
@@ -1210,7 +1688,7 @@ class Database:
                            COUNT(*) AS cantidad,
                            ROUND(SUM(total), 2) AS total
                     FROM facturas
-                    WHERE sustituida_por IS NULL
+                    WHERE sustituida_por IS NULL AND tipo_documento != 'albaran'
                     GROUP BY proveedor_nombre
                     ORDER BY total DESC
                     LIMIT 10
@@ -1218,15 +1696,24 @@ class Database:
                 ).fetchall()
             ]
 
+            # Facturas activas no pagadas con su importe pendiente (total − pagos confirmados)
+            unpaid_sql = """
+                SELECT id, proveedor_nombre, numero_factura, fecha_emision,
+                       fecha_vencimiento, total, estado_pago, categoria,
+                       ROUND(total - COALESCE((
+                           SELECT SUM(vc.importe_asignado) FROM vinculos_conciliacion vc
+                           WHERE vc.factura_id = facturas.id AND vc.confirmado = 1
+                       ), 0.0), 2) AS importe_pendiente
+                FROM facturas
+                WHERE sustituida_por IS NULL AND estado_pago != 'pagada' AND tipo_documento != 'albaran'
+            """
+
             # Vencimientos próximos (próximos 15 días o vencidas aún no pagadas)
             vencimientos_proximos = [
                 dict(r)
                 for r in conn.execute(
-                    """
-                    SELECT id, proveedor_nombre, numero_factura, fecha_emision,
-                           fecha_vencimiento, total, estado_pago, categoria
-                    FROM facturas
-                    WHERE sustituida_por IS NULL AND estado_pago != 'pagada'
+                    unpaid_sql
+                    + """
                       AND fecha_vencimiento IS NOT NULL
                       AND fecha_vencimiento != ''
                       AND fecha_vencimiento <= ?
@@ -1241,11 +1728,8 @@ class Database:
             pendientes_pago = [
                 dict(r)
                 for r in conn.execute(
-                    """
-                    SELECT id, proveedor_nombre, numero_factura, fecha_emision,
-                           fecha_vencimiento, total, estado_pago, categoria
-                    FROM facturas
-                    WHERE sustituida_por IS NULL AND estado_pago != 'pagada'
+                    unpaid_sql
+                    + """
                     ORDER BY COALESCE(fecha_vencimiento, fecha_emision) ASC
                     LIMIT 20
                     """
@@ -1272,6 +1756,7 @@ class Database:
                 "iva_total": round(float(resumen["iva_total"] or 0.0), 2),
                 "pendientes_revision": int(resumen["pendientes_revision"] or 0),
                 "facturas_impagadas": int(resumen["facturas_impagadas"] or 0),
+                "albaranes": int(resumen["albaranes"] or 0),
                 "importe_pendiente_pago": round(float(resumen["importe_pendiente_pago"] or 0.0), 2),
                 "fecha_referencia": today,
             },

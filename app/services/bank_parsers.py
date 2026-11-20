@@ -368,6 +368,195 @@ def parse_csv_or_excel(
 
 
 # =====================================================================
+# Saldos finales de los extractos (para el panel de liquidez)
+# =====================================================================
+
+
+def _n43_signed_amount(sign_code: str, raw_amount: str) -> Optional[float]:
+    """Importe Norma 43 de 14 dígitos con 2 decimales; signo '1' = deudor (negativo), '2' = acreedor."""
+    raw = (raw_amount or "").strip()
+    if sign_code not in ("1", "2") or len(raw) != 14 or not raw.isdigit():
+        return None
+    value = int(raw) / 100.0
+    return round(-value if sign_code == "1" else value, 2)
+
+
+def parse_norma43_balances(
+    content: Union[bytes, str],
+    banco_default: str = "Norma43",
+) -> List[Dict[str, Any]]:
+    """
+    Saldo final de cada cuenta de un fichero Norma 43.
+    - Registro 11: cuenta (pos. 3-20), fecha final (pos. 27-32), saldo inicial (signo pos. 33, importe 34-47).
+    - Registro 22: movimientos (signo pos. 28, importe 29-42).
+    - Registro 33: saldo final (signo pos. 59, importe 60-73, 14 dígitos con 2 decimales).
+    Si el registro 33 no es legible, se calcula como saldo inicial + suma de movimientos.
+    """
+    if isinstance(content, bytes):
+        text = content.decode("latin-1", errors="replace")
+    else:
+        text = content
+
+    saldos: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r\n")
+        rec_type = line[0:2]
+        if rec_type == "11" and len(line) >= 47:
+            entidad = line[2:6].strip()
+            oficina = line[6:10].strip()
+            cuenta = line[10:20].strip()
+            divisa_cod = line[47:50].strip() if len(line) >= 50 else "978"
+            current = {
+                "banco": f"Entidad {entidad}" if banco_default == "Norma43" and entidad else banco_default,
+                "cuenta": f"{entidad}-{oficina}-{cuenta}",
+                "fecha_saldo": _parse_yymmdd(line[26:32]),
+                "saldo_inicial": _n43_signed_amount(line[32:33], line[33:47]),
+                "suma_movimientos": 0.0,
+                "ultima_fecha_mov": None,
+                "moneda": "EUR" if divisa_cod in ("978", "") else divisa_cod,
+            }
+        elif rec_type == "22" and current is not None and len(line) >= 42:
+            amount = _n43_signed_amount(line[27:28], line[28:42])
+            if amount is not None:
+                current["suma_movimientos"] += amount
+            f_oper = _parse_yymmdd(line[10:16])
+            if f_oper and (current["ultima_fecha_mov"] is None or f_oper > current["ultima_fecha_mov"]):
+                current["ultima_fecha_mov"] = f_oper
+        elif rec_type == "33" and current is not None:
+            saldo = _n43_signed_amount(line[58:59], line[59:73]) if len(line) >= 73 else None
+            if saldo is None and current["saldo_inicial"] is not None:
+                saldo = round(current["saldo_inicial"] + current["suma_movimientos"], 2)
+            fecha = current["fecha_saldo"] or current["ultima_fecha_mov"]
+            if saldo is not None and fecha:
+                saldos.append(
+                    {
+                        "banco": current["banco"],
+                        "cuenta": current["cuenta"],
+                        "fecha_saldo": fecha,
+                        "saldo": saldo,
+                        "moneda": current["moneda"],
+                    }
+                )
+            current = None
+
+    return saldos
+
+
+def parse_camt053_balances(
+    content: Union[bytes, str],
+    banco_default: str = "CAMT.053",
+) -> List[Dict[str, Any]]:
+    """Saldo de cierre contable (<Bal> con <Cd>CLBD</Cd>) de cada <Stmt>; DBIT significa saldo negativo."""
+    root = None
+    if isinstance(content, bytes):
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            root = None
+    if root is None:
+        text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
+        root = ET.fromstring(text.lstrip("﻿"))
+    _strip_xml_namespaces(root)
+
+    saldos: List[Dict[str, Any]] = []
+    for stmt in root.findall(".//Stmt"):
+        cuenta = _xml_text(stmt, "./Acct/Id/IBAN") or _xml_text(stmt, "./Acct/Id/Othr/Id")
+        bank_name = (
+            _xml_text(stmt, "./Acct/Svcr/FinInstnId/Nm")
+            or _xml_text(stmt, "./Acct/Svcr/FinInstnId/BIC")
+            or _xml_text(stmt, "./Acct/Svcr/FinInstnId/BICFI")
+            or banco_default
+        )
+        chosen = None
+        for code in ("CLBD", "CLAV"):  # contable de cierre; disponible solo como respaldo
+            for bal in stmt.findall("./Bal"):
+                bal_code = _xml_text(bal, "./Tp/CdOrPrtry/Cd").upper()
+                if bal_code == code:
+                    chosen = bal
+                    break
+            if chosen is not None:
+                break
+        if chosen is None:
+            continue
+        amt_el = chosen.find("./Amt")
+        try:
+            value = float((amt_el.text or "").strip()) if amt_el is not None else None
+        except ValueError:
+            value = None
+        fecha = (_xml_text(chosen, "./Dt/Dt") or _xml_text(chosen, "./Dt/DtTm"))[:10]
+        if value is None or not fecha:
+            continue
+        if _xml_text(chosen, "./CdtDbtInd").upper() == "DBIT":
+            value = -abs(value)
+        saldos.append(
+            {
+                "banco": bank_name,
+                "cuenta": cuenta or bank_name,
+                "fecha_saldo": fecha,
+                "saldo": round(value, 2),
+                "moneda": (amt_el.attrib.get("Ccy") if amt_el is not None else None) or "EUR",
+            }
+        )
+    return saldos
+
+
+def parse_csv_balance(
+    content: Union[bytes, str],
+    filename: str = "extracto.csv",
+    mapping: Optional[Union[CSVMappingConfig, Dict[str, Any]]] = None,
+    banco_default: str = "Banco CSV",
+) -> List[Dict[str, Any]]:
+    """Si el CSV/Excel trae una columna 'Saldo', devuelve el saldo de la fila con la fecha más reciente."""
+    cfg: Optional[CSVMappingConfig] = None
+    if isinstance(mapping, CSVMappingConfig):
+        cfg = mapping
+    elif isinstance(mapping, dict) and mapping.get("columna_fecha"):
+        cfg = CSVMappingConfig(**mapping)
+
+    rows = _read_tabular_rows(content, filename=filename, separator=cfg.separador if cfg else None)
+    if not rows:
+        return []
+    header_idx = 0
+    for idx, row in enumerate(rows[:10]):
+        joined = " ".join(str(c).lower() for c in row if c is not None)
+        if any(w in joined for w in ("fecha", "date", "concepto", "descripci", "importe", "amount")):
+            header_idx = idx
+            break
+    headers = [str(c or "").strip() for c in rows[header_idx]]
+    col_fecha = _find_column_index(
+        headers, cfg.columna_fecha if cfg else None, ["fecha operación", "fecha operacion", "fecha", "f. operación", "date"]
+    )
+    col_saldo = _find_column_index(headers, None, ["saldo", "balance", "disponible"])
+    if col_fecha is None or col_saldo is None:
+        return []
+
+    dated: List[tuple] = []
+    for r in rows[header_idx + 1 :]:
+        if not r or _safe_cell(r, col_saldo) == "":
+            continue
+        fecha_iso = _parse_flexible_date(_safe_cell(r, col_fecha), preferred_fmt=cfg.formato_fecha if cfg else None)
+        if not fecha_iso:
+            continue
+        try:
+            saldo = _amount_from_row(r, col_saldo)
+        except ValueError:
+            continue
+        dated.append((fecha_iso, saldo))
+    if not dated:
+        return []
+
+    max_date = max(d[0] for d in dated)
+    same_day = [d for d in dated if d[0] == max_date]
+    # Extractos ordenados de más reciente a más antiguo: la primera fila del día es la última operación.
+    descending = dated[0][0] >= dated[-1][0] and dated[0][0] != dated[-1][0]
+    saldo_final = same_day[0][1] if descending else same_day[-1][1]
+    banco = (cfg.banco if cfg and cfg.banco else banco_default).strip()
+    return [{"banco": banco, "cuenta": banco, "fecha_saldo": max_date, "saldo": round(saldo_final, 2), "moneda": "EUR"}]
+
+
+# =====================================================================
 # Helpers internos de parseo bancario
 # =====================================================================
 

@@ -277,7 +277,19 @@ def test_oauth_callback_exchanges_code_and_stores_tokens(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(OAuth2MailConnector, "exchange_authorization_code", classmethod(fake_exchange))
     client = TestClient(app, base_url="http://127.0.0.1")
-    r = client.get("/api/mail/oauth/callback", params={"code": "abc", "state": "farmacia@gmail.com"})
+    # El 'state' ya no es el correo (se podía falsificar): es un código de un solo uso que da el servidor.
+    r_forged = client.get("/api/mail/oauth/callback", params={"code": "abc", "state": "farmacia@gmail.com"})
+    assert r_forged.status_code == 400
+    r_url = client.post(
+        "/api/mail/oauth/authorize-url",
+        json={"provider": "oauth_gmail", "client_id": "cid", "email": "farmacia@gmail.com"},
+    )
+    assert r_url.status_code == 200
+    from urllib.parse import parse_qs, urlparse
+
+    nonce = parse_qs(urlparse(r_url.json()["authorization_url"]).query)["state"][0]
+    assert nonce != "farmacia@gmail.com"
+    r = client.get("/api/mail/oauth/callback", params={"code": "abc", "state": nonce})
     assert r.status_code == 200
     assert "conectada" in r.text
     assert captured == {"provider": "oauth_gmail", "code": "abc", "client_id": "cid", "client_secret": "sec"}
@@ -301,7 +313,7 @@ class _ListConnector(MailConnector):
         return [e for e in self.envelopes if not (is_processed and is_processed(e.message_id))]
 
 
-def test_attachment_error_is_recorded_and_message_not_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_attachment_error_is_recorded_and_retried_up_to_three_times(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db = _db(tmp_path)
     creds = CredentialManager(vault_dir=tmp_path, force_encrypted_fallback=True)
     acc_id = db.upsert_mail_account(
@@ -326,10 +338,14 @@ def test_attachment_error_is_recorded_and_message_not_retried(tmp_path: Path, mo
 
     stats = poller.sync_account(account)
     assert stats["errores"] and "PDF ilegible" in stats["errores"][0]
+    # Decisión: un correo con error se reintenta hasta 3 veces y después queda como error visible
+    assert not db.is_message_processed(acc_id, "<m1@proveedor.es>")
+    poller.sync_account(account)
+    poller.sync_account(account)
     assert db.is_message_processed(acc_id, "<m1@proveedor.es>")
     with db.connect() as conn:
-        row = conn.execute("SELECT estado, detalle FROM mensajes_procesados").fetchone()
-    assert row["estado"] == "error" and "PDF ilegible" in row["detalle"]
+        row = conn.execute("SELECT estado, detalle, intentos FROM mensajes_procesados").fetchone()
+    assert row["estado"] == "error" and "PDF ilegible" in row["detalle"] and row["intentos"] == 3
     assert poller.sync_account(account)["mensajes_nuevos"] == 0
 
 

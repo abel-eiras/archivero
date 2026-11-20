@@ -63,11 +63,16 @@ def build_extraction_prompt(categories: Optional[List[Dict[str, str]]] = None) -
         '    "irpf": 0.00,\n'
         '    "porcentaje_iva": 21,\n'
         '    "forma_pago": "domiciliacion | transferencia | tarjeta | giro | efectivo",\n'
-        '    "iban_pago": ""\n'
+        '    "iban_pago": "",\n'
+        '    "desglose_iva": [{"tipo": 21, "base": 0.00, "cuota": 0.00, "recargo_tipo": 5.2, "recargo_cuota": 0.00}]\n'
         "  }\n"
         "}\n"
         "Reglas importantes:\n"
         "1. Si es un abono o factura rectificativa, usa tipo_documento='abono' y pon los importes en negativo.\n"
+        "1b. Si el documento es un ALBARÁN o nota de entrega (no una factura), usa tipo_documento='albaran'.\n"
+        "1c. En datos_extra.desglose_iva pon una línea por cada tipo de IVA que aparezca (21, 10, 4 o 0) con su "
+        "base, su cuota y, si hay recargo de equivalencia, su tipo (5.2, 1.4 o 0.5) y su cuota. "
+        "Si solo hay un tipo, una sola línea.\n"
         "2. Si la factura incluye Recargo de Equivalencia (muy común en farmacias: 5.2%, 1.4%, 0.5%), "
         "ponlo en datos_extra.recargo_equivalencia.\n"
         "3. Si la factura incluye retención de IRPF (alquileres o profesionales), pon el importe retenido "
@@ -589,6 +594,10 @@ class LLMProcessor:
         provider = self._build_provider()
         provider_used = provider.provider_name
         fallback_warning: Optional[str] = None
+        # El lector básico sustituye a la IA elegida (falta la clave o la IA ha fallado): nunca se da por buena sola
+        substitute = self.provider_type != "heuristico_local" and isinstance(provider, HeuristicInvoiceExtractor)
+        if substitute:
+            provider_used = f"heuristico_local(sin_clave:{self.provider_type})"
 
         try:
             extraction = provider.extract_invoice(pdf_content, categories=self.categories)
@@ -602,6 +611,7 @@ class LLMProcessor:
             extraction = fallback.extract_invoice(pdf_content, categories=self.categories)
             provider_used = f"{provider.provider_name}->heuristico_local"
             fallback_warning = f"Se usó extracción local de respaldo por error en la IA externa: {describe_llm_error(exc)}"
+            substitute = True
 
         # Aplicar reglas por remitente o proveedor si se han configurado
         if sender_rule_overrides:
@@ -622,6 +632,8 @@ class LLMProcessor:
         )
         if fallback_warning:
             validacion.advertencias.append(fallback_warning)
+        if substitute:
+            apply_basic_reader_policy(validacion, missing_key=fallback_warning is None)
 
         extraction.nivel_confianza = validacion.confianza_ajustada
 
@@ -632,7 +644,26 @@ class LLMProcessor:
             extraccion=extraction,
             validacion=validacion,
             proveedor_llm_usado=provider_used,
+            lectura_basica_sustituta=substitute,
         )
+
+
+BASIC_READER_MAX_CONFIDENCE = 0.6
+BASIC_READER_NOTICE = (
+    "Leída con el lector básico del ordenador en lugar de la IA elegida: revisa los datos antes de darla por buena."
+)
+
+
+def apply_basic_reader_policy(validacion: ValidationResult, missing_key: bool = False) -> ValidationResult:
+    """Si el lector básico sustituyó a la IA, la factura siempre va a revisión con confianza limitada."""
+    validacion.confianza_ajustada = round(min(validacion.confianza_ajustada, BASIC_READER_MAX_CONFIDENCE), 2)
+    validacion.estado_revision = "pendiente_revision"
+    if not any(w.startswith(BASIC_READER_NOTICE) for w in validacion.advertencias):
+        aviso = BASIC_READER_NOTICE
+        if missing_key:
+            aviso += " (No hay clave de la IA configurada en Configuración.)"
+        validacion.advertencias.append(aviso)
+    return validacion
 
 
 # =====================================================================
@@ -861,9 +892,23 @@ def _extract_amounts(text: str, is_credit_note: bool = False) -> Dict[str, float
     }
 
 
+_ALBARAN_RE = re.compile(r"\b(albar[aá]n|nota\s+de\s+entrega)\b", re.IGNORECASE)
+_FACTURA_RE = re.compile(r"\bfactura\b", re.IGNORECASE)
+
+
+def is_delivery_note_text(text: str, title_lines: int = 6) -> bool:
+    """Albarán: el título (primeras líneas) dice albarán/nota de entrega y no dice factura."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()][:title_lines]
+    title = " ".join(lines)
+    return bool(_ALBARAN_RE.search(title)) and not _FACTURA_RE.search(title)
+
+
 def _classify_document_and_category(text: str, supplier: str) -> tuple[str, str]:
     """Clasifica el tipo de documento y la categoría según el contenido y proveedor."""
     combined = f"{supplier} {text}".lower()
+
+    if is_delivery_note_text(text):
+        return "albaran", "compras_mercancia"
 
     if any(w in combined for w in ("abono", "factura rectificativa", "nota de crédito", "devolución de mercancía")):
         return "abono", "compras_mercancia"

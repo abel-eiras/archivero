@@ -18,6 +18,9 @@ from app.services.credentials import CredentialManager
 from app.services.pipeline import InvoiceIngestionPipeline
 from app.services.reconciliation import BankReconciliationService
 
+# Los extractos de ejemplo llevan este prefijo para poder borrarlos luego sin tocar los reales.
+DEMO_BANK_FILE_PREFIX = "datos_ejemplo_archivero_"
+
 
 def build_invoice_pdf_bytes(lines: List[str]) -> bytes:
     """Genera un archivo PDF válido en memoria con capa de texto nativa."""
@@ -166,8 +169,8 @@ def build_sample_norma43_statement() -> str:
     3. Pago a Comercializadora Eléctrica: -254,10 € (FRA-2026-2050)
     """
     lines = [
-        # Registro 11: Cabecera de cuenta
-        "112100041812345678902611012611302000001500000009783FARMACIA CENTRAL             ",
+        # Registro 11: Cabecera de cuenta (saldo inicial acreedor 15.000,00 €)
+        "112100041812345678902611012611302000000015000009783FARMACIA CENTRAL             ",
         # Movimiento 1: Distribuidora Norte -1254.00 EUR el 2026-11-15
         "22    0418261115261115030001000000001254000000001001FRA-2026-1001   DIST. NORTE ",
         "2301RECIBO DOMICILIADO DISTRIBUIDORA NORTE  FACTURA FRA-2026-1001               ",
@@ -177,8 +180,8 @@ def build_sample_norma43_statement() -> str:
         # Movimiento 3: Comercializadora Eléctrica -254.10 EUR el 2026-11-18
         "22    0418261118261118030001000000000254100000002050FRA-2026-2050   ELECTRICA   ",
         "2301RECIBO COMERCIALIZADORA ELECTRICA       SUMINISTRO ELECTRICO                ",
-        # Registro 33 y 88: Cierre
-        "33210004181234567890000030000002291850000000000000000002000012708150978         ",
+        # Registro 33 (saldo final acreedor 12.708,15 €) y 88: Cierre
+        "3321000418123456789000003000000002291850000000000000000000200000001270815978    ",
         "88999999999999999999000008                                                      ",
     ]
     return "\n".join(lines) + "\n"
@@ -237,27 +240,31 @@ def generate_and_ingest_sample_dataset(
         )
         if res.status == "insertada":
             insertadas += 1
+            if res.invoice_id:
+                extra = dict((res.invoice or {}).get("datos_extra") or {})
+                extra["demo"] = True
+                database.update_invoice(int(res.invoice_id), {"datos_extra": extra})
         elif res.status == "duplicada":
             duplicadas += 1
 
     reconciler = BankReconciliationService(db=database)
     r_n43 = reconciler.import_statement(
         content=build_sample_norma43_statement(),
-        filename="extracto_noviembre.n43",
+        filename=DEMO_BANK_FILE_PREFIX + "extracto_noviembre.n43",
         formato="norma43",
         banco="Banco Principal Farmacia",
         auto_reconcile=True,
     )
     r_camt = reconciler.import_statement(
         content=build_sample_camt053_xml(),
-        filename="extracto_camt053.xml",
+        filename=DEMO_BANK_FILE_PREFIX + "extracto_camt053.xml",
         formato="camt053",
         banco="Banco Principal Farmacia",
         auto_reconcile=True,
     )
     r_csv = reconciler.import_statement(
         content=build_sample_csv_statement(),
-        filename="extracto_asesoria.csv",
+        filename=DEMO_BANK_FILE_PREFIX + "extracto_asesoria.csv",
         formato="csv",
         banco="Cuenta Secundaria Farmacia",
         auto_reconcile=True,

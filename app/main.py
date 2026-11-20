@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import io
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import socket
@@ -24,6 +26,7 @@ from app.config import (
     APP_NAME,
     APP_VERSION,
     BUNDLE_DIR,
+    DAILY_BACKUPS_TO_KEEP,
     DEFAULT_BACKUP_DIR,
     DEFAULT_DATA_DIR,
     DEFAULT_DB_PATH,
@@ -31,36 +34,89 @@ from app.config import (
     DEFAULT_PORT,
 )
 from app.db.database import Database
+from app.services.activity import generate_due_date_notice
 from app.services.credentials import CredentialManager
 from app.services.mail_poller import MailPollerService
 
 
-def _ensure_standard_streams() -> None:
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+def _build_log_file_handler() -> Optional[logging.Handler]:
+    """Registro en archivero.log que rota solo (5 MB x 3 copias) para que no crezca sin límite."""
+    try:
+        DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            DEFAULT_DATA_DIR / "archivero.log",
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+            delay=True,
+        )
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        return handler
+    except Exception:
+        return None
+
+
+class _StreamToLog(io.TextIOBase):
+    """Sustituto de sys.stdout/sys.stderr que escribe en el log rotativo (sin consola en Windows)."""
+
+    def __init__(self, handler: logging.Handler, name: str) -> None:
+        self._handler = handler
+        self._name = name
+
+    def writable(self) -> bool:
+        return True
+
+    def isatty(self) -> bool:
+        return False
+
+    def write(self, text: str) -> int:
+        if text and text.strip():
+            record = logging.LogRecord(self._name, logging.INFO, "", 0, text.rstrip("\n"), None, None)
+            try:
+                self._handler.handle(record)
+            except Exception:
+                pass
+        return len(text or "")
+
+    def flush(self) -> None:
+        pass
+
+
+def _ensure_standard_streams(handler: Optional[logging.Handler] = None) -> bool:
     """
     En ejecutables de Windows compilados con PyInstaller (console=False),
     sys.stdout y sys.stderr son None, lo que provoca un AttributeError ('isatty')
-    en el formateador por defecto de Uvicorn. Redirigimos ambos a un archivo de log local.
+    en el formateador por defecto de Uvicorn. Se redirigen al log rotativo local.
+    Devuelve True si se ha redirigido algo.
     """
-    try:
-        DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        log_file = DEFAULT_DATA_DIR / "archivero.log"
-        if sys.stdout is None:
-            sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)
-        if sys.stderr is None:
-            sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)
-    except Exception:
-        if sys.stdout is None:
-            sys.stdout = open(os.devnull, "w", encoding="utf-8")
-        if sys.stderr is None:
-            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    redirected = False
+    if handler is None:
+        handler = globals().get("_LOG_FILE_HANDLER")
+    for attr in ("stdout", "stderr"):
+        if getattr(sys, attr) is None:
+            redirected = True
+            if handler is not None:
+                setattr(sys, attr, _StreamToLog(handler, attr))
+            else:
+                setattr(sys, attr, open(os.devnull, "w", encoding="utf-8"))
+    return redirected
 
 
-_ensure_standard_streams()
+_LOG_FILE_HANDLER = _build_log_file_handler()
+_STREAMS_REDIRECTED = _ensure_standard_streams(_LOG_FILE_HANDLER)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+_handlers: list = []
+if _LOG_FILE_HANDLER is not None:
+    _handlers.append(_LOG_FILE_HANDLER)
+if not _STREAMS_REDIRECTED:
+    # Con consola: también se ve en pantalla. Sin consola, la pantalla ya es el propio log.
+    _handlers.append(logging.StreamHandler())
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=_handlers)
 logger = logging.getLogger(__name__)
 
 APP_DIR = BUNDLE_DIR / "app"
@@ -88,6 +144,17 @@ def _is_local_origin(value: str, allowed: Iterable[str]) -> bool:
         return False
 
 
+def _asset_version() -> str:
+    """Huella de los ficheros estáticos para que el navegador no use versiones antiguas tras actualizar."""
+    stamps = []
+    for name in ("styles.css", "app.js"):
+        try:
+            stamps.append(str(int((STATIC_DIR / name).stat().st_mtime)))
+        except OSError:
+            stamps.append("0")
+    return f"{APP_VERSION}-{'-'.join(stamps)}"
+
+
 def create_app(
     db_path: Optional[Path] = None,
     backup_dir: Optional[Path] = None,
@@ -106,6 +173,18 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
+        try:
+            purged = db.purge_old_events(days=180)
+            db.log_event(
+                tipo="inicio_programa",
+                mensaje=f"{APP_NAME} {APP_VERSION} se ha puesto en marcha.",
+                detalle={"avisos_antiguos_borrados": purged},
+                leido=True,
+            )
+            generate_due_date_notice(db)
+            db.create_daily_backup_if_needed(keep=DAILY_BACKUPS_TO_KEEP)
+        except Exception as exc:  # El arranque nunca debe fallar por el registro de actividad
+            logger.warning("No se pudo preparar el registro de actividad: %s", exc)
         if start_background_poller:
             mail_poller.start_background_worker()
         try:
@@ -161,7 +240,11 @@ def create_app(
         return templates.TemplateResponse(
             request=request,
             name="index.html",
-            context={"app_name": APP_NAME, "app_version": APP_VERSION},
+            context={
+                "app_name": APP_NAME,
+                "app_version": APP_VERSION,
+                "asset_version": _asset_version(),
+            },
         )
 
     @app.get("/presentacion", response_class=HTMLResponse)

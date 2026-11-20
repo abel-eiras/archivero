@@ -60,39 +60,39 @@ En el apartado **1. Lectura de Facturas y Carpeta para la Gestoría**:
 
 ### Paso 2: Configurar la Lectura Inteligente de Facturas (Google, OpenAI, Claude o Modo sin Internet)
 
-#### ¿Por qué el programa pide una "Clave API" y no sirve la suscripción mensual de ChatGPT Plus, Claude Pro o Gemini Advanced?
+#### ¿Por qué el programa pide una "Clave API" y no sirve la suscripción mensual de ChatGPT, Claude o Gemini?
 Es muy importante conocer esta diferencia:
-- Las **suscripciones mensuales de 20 €/mes** (*ChatGPT Plus*, *Claude Pro*, *Gemini Advanced / Google One*) son exclusivamente para que una persona chatee escribiendo a mano dentro de su página web. Google, OpenAI y Anthropic prohíben y bloquean que un programa automático use esas cuentas web.
+- Las **suscripciones mensuales de chat** (las versiones de pago de *ChatGPT*, *Claude* o *Gemini*) son para que una persona chatee dentro de su página web o aplicación. No dan acceso a que un programa automático lea documentos por su cuenta.
 - Para que un programa de ordenador lea documentos automáticamente, estas empresas ofrecen lo que llaman **Clave de conexión (API Key)**.
-- **La gran ventaja para tu farmacia:** Con una Clave API **no pagas ninguna cuota mensual fija**. En Google tienes una modalidad **100% gratuita (0 €)**, y en las modalidades profesionales de pago por uso solo pagas por las facturas que procesas (**leer 100 facturas cuesta unos 2 céntimos de euro**, es decir, menos de 0,50 € en todo el año).
+- **La gran ventaja para tu farmacia:** Con una Clave API **no pagas ninguna cuota mensual fija**. Google ofrece una modalidad gratuita con límites de uso, y en las modalidades de pago por uso solo pagas por las facturas que procesas: para el volumen normal de una farmacia suelen ser **unos céntimos al mes**. Los precios los fija cada proveedor y pueden cambiar; consúltalos en su web antes de elegir.
 
 #### Comparativa rápida de opciones disponibles en el programa
 
 | Proveedor en el programa | Coste para una farmacia | ¿Mis facturas son privadas? | ¿Lee facturas escaneadas / fotos? |
 | :--- | :--- | :--- | :--- |
-| **Google AI Studio (Plan Gratuito)** | **0,00 € (Gratis)** (hasta 1.500 facturas/día) | Google avisa de que puede usar los textos para mejorar sus sistemas | **Sí** (visión directa del PDF) |
-| **Google AI Studio (Con facturación activada)** | **~0,02 € por cada 100 facturas** (sin cuota mensual) | **100% Privado por contrato** (nunca se usan para entrenar) | **Sí** (visión directa del PDF) |
-| **OpenAI (ChatGPT API)** | **~0,03 € por cada 100 facturas** (recarga mínima de 5 € que dura más de un año) | **100% Privado por contrato** | **Sí** (con OCR / texto) |
-| **Anthropic (Claude API)** | **~0,05 € por cada 100 facturas** (recarga mínima de 5 €) | **100% Privado por contrato** | **Sí** (lectura nativa de PDF) |
+| **Google AI Studio (Plan Gratuito)** | **Gratis** (con límites diarios de uso que fija Google) | Google avisa de que puede usar los textos para mejorar sus sistemas | **Sí** (visión directa del PDF) |
+| **Google AI Studio (Con facturación activada)** | **Unos céntimos** al mes, según uso (sin cuota mensual) | **100% Privado por contrato** (nunca se usan para entrenar) | **Sí** (visión directa del PDF) |
+| **OpenAI (API)** | **Unos céntimos** al mes, según uso (pago por adelantado de saldo) | **100% Privado por contrato** | **Sí** (con OCR / texto) |
+| **Anthropic (API de Claude)** | **Unos céntimos** al mes, según uso (pago por adelantado de saldo) | **100% Privado por contrato** | **Sí** (lectura nativa de PDF) |
 | **Modo básico sin Internet** | **0,00 € (Gratis)** | **100% en tu ordenador** (nada sale a Internet) | Solo facturas digitales con texto claro |
 
 #### Cómo conseguir tu clave paso a paso según el proveedor que prefieras
 
-1. **Opción recomendada: Google AI Studio (Gemini) — Gratis o Privado por céntimos**
+1. **Opción recomendada: Google AI Studio — Gratis o privado por unos céntimos**
    - Entra con cualquier cuenta de Google/Gmail en **[https://aistudio.google.com/apikey](https://aistudio.google.com/apikey)**.
    - Haz clic en el botón azul **"Create API key"** (Crear clave de API).
    - Copia el código que empieza por `AIza...`.
-   - En el programa, ve a **Configuración Fácil**, elige *Google Gemini*, pega la clave, pulsa **"Probar Clave"** y haz clic en **Guardar Opciones**.
+   - En el programa, ve a **Configuración Fácil**, elige *Google AI Studio*, pega la clave, pulsa **"Probar Clave"** y haz clic en **Guardar Opciones**.
    - *(Opcional para máxima privacidad):* Si en la misma web de Google AI Studio pulsas en *"Set up Billing"* (Configurar facturación), tu clave pasa automáticamente al nivel privado empresarial donde Google garantiza que ningún dato de la farmacia se revisa ni entrena modelos, pagando solo unos céntimos al año.
 
 2. **Opción alternativa: OpenAI (creadores de ChatGPT)**
    - Entra en **[https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)** y crea una cuenta o inicia sesión.
-   - En el menú *Settings → Billing*, añade 5 € de saldo (no caduca durante un año y da para miles de facturas).
+   - En el menú *Settings → Billing*, añade un poco de saldo (para una farmacia, el gasto suele ser de unos céntimos al mes).
    - En *API Keys*, pulsa **"Create new secret key"**, copia la clave que empieza por `sk-...`, elige *OpenAI* en **Configuración Fácil** y pégala.
 
 3. **Opción alternativa: Anthropic (creadores de Claude)**
    - Entra en **[https://console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)**.
-   - En *Billing* carga 5 € de saldo y en *API Keys* pulsa **"Create Key"**.
+   - En *Billing* carga un poco de saldo y en *API Keys* pulsa **"Create Key"**.
    - Copia la clave que empieza por `sk-ant-...`, selecciona *Anthropic (Claude API)* en **Configuración Fácil** y pégala.
 
 ### Paso 3: Conectar el correo de la farmacia
@@ -156,7 +156,8 @@ archivo_facturas/
 
 ## 6. Seguridad, privacidad y preguntas frecuentes
 
-- **¿Mis contraseñas están seguras?** Sí. Las contraseñas del correo y la clave de Google nunca se guardan en la base de datos ni en archivos de texto: se guardan en el almacén de seguridad del propio sistema operativo (el *Administrador de credenciales de Windows* o el *Llavero de Mac*).
+- **¿Mis contraseñas están seguras?** Sí. Las contraseñas del correo y las claves de la IA nunca se guardan en la base de datos ni en archivos de texto legibles: se guardan en el almacén de seguridad del propio sistema operativo (el *Administrador de credenciales de Windows* o el *Llavero de Mac*). Si ese almacén no está disponible, se guardan en un archivo cifrado dentro de la carpeta de datos del programa, que solo Archivero sabe abrir.
+- **¿Se hacen copias de seguridad?** Sí. El programa guarda una copia de la base de datos una vez al día (conserva las últimas 14) y otra antes de cada cambio de versión de la base de datos. También puedes guardar una copia cuando quieras desde Configuración.
 - **¿Pueden entrar otros ordenadores de la farmacia a ver mis facturas?** No. El programa escucha únicamente en `127.0.0.1` (`localhost`), por lo que solo se puede abrir desde el mismo ordenador donde está funcionando.
 - **¿Qué ocurre si uso la clave gratuita de Google AI Studio?** En el nivel gratuito de Google AI Studio, Google indica en sus condiciones que puede utilizar los datos procesados para mejorar sus modelos. El programa te avisa claramente en la pantalla de configuración y te permite usar una clave de pago confidencial o el modo de lectura local sin Internet.
 - **¿Qué pasa si borro o muevo sin querer un PDF de la carpeta?** Nada grave: el panel principal, las estadísticas y el Excel leen siempre de la base de datos interna (`SQLite`), por lo que tus cuentas nunca se pierden aunque alguien mueva los archivos de la carpeta de la gestoría.
