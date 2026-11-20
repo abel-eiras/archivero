@@ -7,11 +7,34 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import openpyxl
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.config import CATEGORIAS_INICIALES, TIPOS_DOCUMENTO
 from app.db.database import Database
+
+
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_cell_value(value: Any) -> Any:
+    """
+    Sanea textos procedentes de facturas/extractos antes de escribirlos en Excel:
+    - elimina caracteres de control ilegales en XML (si no, openpyxl aborta la exportación);
+    - neutraliza la inyección de fórmulas anteponiendo un apóstrofo a los textos que empiezan
+      por = + - @ (los números, incluidos los negativos, se dejan como números).
+    """
+    if not isinstance(value, str):
+        return value
+    cleaned = ILLEGAL_CHARACTERS_RE.sub("", value)
+    if cleaned.startswith(_FORMULA_PREFIXES):
+        cleaned = "'" + cleaned
+    return cleaned
+
+
+def _safe_row(values: list) -> list:
+    return [_safe_cell_value(v) for v in values]
 
 
 class AccountingExcelExporter:
@@ -115,7 +138,7 @@ class AccountingExcelExporter:
             cat_code = inv.get("categoria") or "otros"
             doc_code = inv.get("tipo_documento") or "otros"
 
-            ws.append(
+            ws.append(_safe_row(
                 [
                     inv.get("id"),
                     inv.get("fecha_emision") or "",
@@ -138,7 +161,7 @@ class AccountingExcelExporter:
                     round(float(inv.get("nivel_confianza") or 0.0) * 100, 1),
                     inv.get("ruta_archivo") or "",
                 ]
-            )
+            ))
 
         # Fila de totales
         ws.append(
@@ -199,7 +222,7 @@ class AccountingExcelExporter:
         cat_map = {c["codigo"]: c["nombre"] for c in CATEGORIAS_INICIALES}
         for c in metrics.get("gasto_por_categoria", []):
             code = c.get("categoria") or "otros"
-            ws.append([cat_map.get(code, code), c.get("cantidad"), c.get("total")])
+            ws.append(_safe_row([cat_map.get(code, code), c.get("cantidad"), c.get("total")]))
 
         self._auto_fit_columns(ws)
 
@@ -208,7 +231,7 @@ class AccountingExcelExporter:
         ws.append(headers)
         self._style_header_row(ws, len(headers))
         for p in metrics.get("gasto_por_proveedor", []):
-            ws.append([p.get("proveedor"), p.get("nif"), p.get("cantidad"), p.get("total")])
+            ws.append(_safe_row([p.get("proveedor"), p.get("nif"), p.get("cantidad"), p.get("total")]))
         self._auto_fit_columns(ws)
 
     def _build_reconciliation_sheet(self, ws: Any, transactions: list[Dict[str, Any]]) -> None:
@@ -234,7 +257,7 @@ class AccountingExcelExporter:
                 f"{l.get('proveedor_nombre', '')} #{l.get('numero_factura', '')} ({l.get('importe_asignado', 0):.2f}€)"
                 for l in links
             )
-            ws.append(
+            ws.append(_safe_row(
                 [
                     tx.get("id"),
                     tx.get("fecha"),
@@ -248,7 +271,7 @@ class AccountingExcelExporter:
                     links_desc,
                     tx.get("notas") or "",
                 ]
-            )
+            ))
         self._auto_fit_columns(ws)
 
     @staticmethod

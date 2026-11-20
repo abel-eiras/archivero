@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
@@ -51,6 +52,12 @@ class CredentialManager:
                     return "system_keyring"
             except Exception as exc:
                 logger.debug("Keyring del sistema no disponible (%s), usando bóveda cifrada local.", exc)
+            # Si la escritura en keyring falló (p. ej. Windows Credential Manager > 2560 bytes),
+            # puede quedar el valor ANTIGUO allí y get_secret lo devolvería antes que la bóveda.
+            try:
+                keyring.delete_password(self.service_name, key)
+            except Exception:
+                pass
 
         self._write_encrypted_vault_entry(key, secret)
         return "encrypted_vault"
@@ -137,15 +144,36 @@ class CredentialManager:
                 pass
         return Fernet(self._key_path.read_bytes().strip())
 
-    def _load_encrypted_vault(self) -> Dict[str, str]:
+    def _load_encrypted_vault(self, preparing_write: bool = False) -> Dict[str, str]:
+        """
+        Carga la bóveda cifrada. Si no se puede descifrar y se va a escribir encima,
+        se conserva una copia del archivo ilegible (.corrupt-<fecha>) para no perder
+        todos los secretos al guardar uno nuevo.
+        """
         if not self._vault_path.exists():
             return {}
         try:
             fernet = self._get_fernet()
             decrypted = fernet.decrypt(self._vault_path.read_bytes())
-            return json.loads(decrypted.decode("utf-8"))
+            data = json.loads(decrypted.decode("utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception as exc:
-            logger.warning("No se pudo descifrar bóveda local: %s", exc)
+            if not preparing_write:
+                logger.error("No se pudo descifrar la bóveda local de credenciales: %s", exc)
+                return {}
+            stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = self._vault_path.with_name(f"{self._vault_path.name}.corrupt-{stamp}")
+            try:
+                self._vault_path.replace(backup)
+                logger.error(
+                    "La bóveda de credenciales no se pudo descifrar (%s). Se ha guardado una copia en %s "
+                    "y se creará una bóveda nueva.",
+                    exc,
+                    backup,
+                )
+            except OSError as move_exc:
+                logger.error("Bóveda ilegible (%s) y no se pudo respaldar (%s).", exc, move_exc)
+                raise
             return {}
 
     def _save_encrypted_vault(self, data: Dict[str, str]) -> None:
@@ -158,7 +186,7 @@ class CredentialManager:
             pass
 
     def _write_encrypted_vault_entry(self, key: str, secret: str) -> None:
-        data = self._load_encrypted_vault()
+        data = self._load_encrypted_vault(preparing_write=True)
         data[key] = secret
         self._save_encrypted_vault(data)
 

@@ -5,6 +5,7 @@ const state = {
   tiposDocumento: {},
   selectedBankTx: null,
   unpaidInvoices: [],
+  bankTransactionsById: {},
   currentEditingInvoice: null,
 };
 
@@ -147,7 +148,7 @@ async function loadDashboard() {
     (data.vencimientos_proximos || []).forEach((inv) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><strong>${inv.fecha_vencimiento || "-"}</strong></td>
+        <td><strong>${escapeHtml(inv.fecha_vencimiento || "-")}</strong></td>
         <td>${escapeHtml(inv.proveedor_nombre)}</td>
         <td>${escapeHtml(inv.numero_factura)}</td>
         <td class="num">${fmtEur(inv.total)}</td>
@@ -164,7 +165,7 @@ async function loadDashboard() {
     (data.pendientes_pago || []).forEach((inv) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${inv.fecha_emision || "-"}</td>
+        <td>${escapeHtml(inv.fecha_emision || "-")}</td>
         <td>${escapeHtml(inv.proveedor_nombre)}</td>
         <td>${escapeHtml(inv.numero_factura)}</td>
         <td>${escapeHtml(categoryName(inv.categoria))}</td>
@@ -220,7 +221,7 @@ function populateCategorySelects() {
     sel.innerHTML =
       firstOpt +
       state.categorias
-        .map((c) => `<option value="${c.codigo}">${escapeHtml(c.nombre)}</option>`)
+        .map((c) => `<option value="${escapeHtml(c.codigo)}">${escapeHtml(c.nombre)}</option>`)
         .join("");
     if (currentVal) sel.value = currentVal;
   });
@@ -229,7 +230,7 @@ function populateCategorySelects() {
   if (docSel) {
     const cur = docSel.value;
     docSel.innerHTML = Object.entries(state.tiposDocumento)
-      .map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`)
+      .map(([k, v]) => `<option value="${escapeHtml(k)}">${escapeHtml(v)}</option>`)
       .join("");
     if (cur) docSel.value = cur;
   }
@@ -251,7 +252,7 @@ async function loadReviewInbox() {
         `Lectura con seguridad del ${confPct}% (requiere confirmación)`;
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${inv.fecha_emision || "-"}</td>
+        <td>${escapeHtml(inv.fecha_emision || "-")}</td>
         <td><strong>${escapeHtml(inv.proveedor_nombre || "Sin proveedor")}</strong></td>
         <td>${escapeHtml(inv.nif || "-")}</td>
         <td>${escapeHtml(inv.numero_factura || "-")}</td>
@@ -307,16 +308,23 @@ async function loadInvoicesList() {
     if (cat) params.set("categoria", cat);
     if (rev) params.set("estado_revision", rev);
     if (pago) params.set("estado_pago", pago);
+    if (document.getElementById("filter-incluir-sustituidas").checked) params.set("incluir_sustituidas", "true");
 
     const data = await apiFetch(`/api/invoices?${params.toString()}`);
     const tbody = document.getElementById("tbody-facturas");
     tbody.innerHTML = "";
 
     (data.items || []).forEach((inv) => {
-      const revBadge =
+      let revBadge =
         inv.estado_revision === "confirmada"
           ? `<span class="badge badge-success">Confirmada</span>`
           : `<span class="badge badge-warning">Por revisar</span>`;
+      if (inv.sustituida_por) {
+        revBadge += ` <span class="badge badge-info">Sustituida por #${escapeHtml(inv.sustituida_por)}</span>`;
+      }
+      if (inv.sustituye_a) {
+        revBadge += ` <span class="badge badge-info">Sustituye a #${escapeHtml(inv.sustituye_a)}</span>`;
+      }
 
       let pagoBadge = `<span class="badge badge-danger">Pendiente</span>`;
       if (inv.estado_pago === "pagada") pagoBadge = `<span class="badge badge-success">Pagada</span>`;
@@ -324,8 +332,8 @@ async function loadInvoicesList() {
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${inv.fecha_emision || "-"}</td>
-        <td>${inv.fecha_vencimiento || "-"}</td>
+        <td>${escapeHtml(inv.fecha_emision || "-")}</td>
+        <td>${escapeHtml(inv.fecha_vencimiento || "-")}</td>
         <td><strong>${escapeHtml(inv.proveedor_nombre)}</strong></td>
         <td>${escapeHtml(inv.nif)}</td>
         <td>${escapeHtml(inv.numero_factura)}</td>
@@ -393,10 +401,17 @@ async function openInvoiceModal(invoiceId) {
 
     const alertsBox = document.getElementById("modal-validation-alerts");
     const errs = inv.errores_validacion || [];
+    let replaceHtml = "";
+    if (inv.sustituye_a) {
+      replaceHtml += `<div class="alert alert-info">Sustituye a la factura #${escapeHtml(inv.sustituye_a)} (mismo proveedor y número).</div>`;
+    }
+    if (inv.sustituida_por) {
+      replaceHtml += `<div class="alert alert-info">Esta factura ha sido sustituida por la #${escapeHtml(inv.sustituida_por)} y se conserva solo como historial.</div>`;
+    }
     if (errs.length > 0) {
-      alertsBox.innerHTML = `<div class="alert alert-warning"><strong>Puntos a revisar en esta factura:</strong><br/>${errs.map(escapeHtml).join("<br/>")}</div>`;
+      alertsBox.innerHTML = replaceHtml + `<div class="alert alert-warning"><strong>Puntos a revisar en esta factura:</strong><br/>${errs.map(escapeHtml).join("<br/>")}</div>`;
     } else {
-      alertsBox.innerHTML = "";
+      alertsBox.innerHTML = replaceHtml;
     }
 
     const pdfUrl = `/api/invoices/${inv.id}/pdf`;
@@ -447,8 +462,10 @@ async function loadBankReconciliation() {
 
     const tbody = document.getElementById("tbody-bank-transactions");
     tbody.innerHTML = "";
+    state.bankTransactionsById = {};
 
     (txData.items || []).forEach((tx) => {
+      state.bankTransactionsById[tx.id] = tx;
       let badge = `<span class="badge badge-danger">Sin factura asignada</span>`;
       if (tx.estado_conciliacion === "conciliado") badge = `<span class="badge badge-success">Cuadrado con factura</span>`;
       else if (tx.estado_conciliacion === "propuesto") badge = `<span class="badge badge-warning">Coincidencia encontrada</span>`;
@@ -476,13 +493,13 @@ async function loadBankReconciliation() {
         `;
       } else {
         actionsHtml = `
-          <button class="btn btn-primary btn-sm" onclick='selectTxForManual(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>Unir a mano</button>
+          <button class="btn btn-primary btn-sm" onclick="selectTxForManualById(${Number(tx.id)})">Unir a mano</button>
         `;
       }
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${tx.fecha}</td>
+        <td>${escapeHtml(tx.fecha)}</td>
         <td><strong>${escapeHtml(tx.banco)}</strong><br/><small style="color:#64748b;">${escapeHtml(tx.cuenta_iban || "")}</small></td>
         <td>${escapeHtml(tx.concepto)}</td>
         <td class="num" style="color:${tx.importe < 0 ? "var(--danger)" : "var(--success)"};">${fmtEur(tx.importe)}</td>
@@ -500,6 +517,11 @@ async function loadBankReconciliation() {
   } catch (err) {
     showToast("Error cargando movimientos del banco: " + err.message);
   }
+}
+
+function selectTxForManualById(id) {
+  const tx = state.bankTransactionsById[id];
+  if (tx) selectTxForManual(tx);
 }
 
 function selectTxForManual(tx) {
@@ -520,7 +542,7 @@ function renderManualCandidateInvoices() {
     tr.innerHTML = `
       <td><input type="checkbox" class="manual-inv-check" data-id="${inv.id}" onchange="recalculateManualSummary()" /></td>
       <td><strong>${escapeHtml(inv.proveedor_nombre)}</strong> · <small>${escapeHtml(inv.numero_factura)}</small></td>
-      <td>${inv.fecha_vencimiento || inv.fecha_emision || "-"}</td>
+      <td>${escapeHtml(inv.fecha_vencimiento || inv.fecha_emision || "-")}</td>
       <td class="num">${fmtEur(pendingVal)}</td>
       <td class="num">
         <input type="number" step="0.01" class="manual-inv-amount" data-id="${inv.id}" value="${pendingVal}" style="width:95px;text-align:right;" oninput="recalculateManualSummary()" />
@@ -572,6 +594,101 @@ async function rejectBankProposal(movId) {
 /* =========================================================
    5. Configuración Fácil
    ========================================================= */
+const CUSTOM_MODEL_VALUE = "__otro__";
+
+const PROVIDER_GUIDES = {
+  google_ai_studio: `
+    <strong>Cómo configurar Google Gemini (gratis):</strong>
+    <ol style="padding-left:1.2rem; margin:0.3rem 0;">
+      <li>Abre <strong>aistudio.google.com/apikey</strong> e inicia sesión con una cuenta de Google.</li>
+      <li>Pulsa <strong>"Create API key"</strong> y copia la clave (empieza por <code>AIza...</code>).</li>
+      <li>Pégala en <em>Clave de conexión</em>, deja el modelo <strong>Gemini Flash-Lite (recomendado)</strong> y pulsa <strong>Probar Clave</strong>.</li>
+      <li>Si sale bien, pulsa <strong>Guardar Opciones</strong>.</li>
+    </ol>
+    <span>El modelo recomendado usa el alias <code>-latest</code>: Google lo actualiza solo a su versión más reciente, así el programa no deja de funcionar cuando retiran un modelo antiguo. Flash-Lite es el que más lecturas gratuitas diarias permite; si alguna vez ves "límite de usos superado", espera unas horas o activa el plan de pago.</span>`,
+  openai_compatible: `
+    <strong>Cómo configurar OpenAI:</strong>
+    <ol style="padding-left:1.2rem; margin:0.3rem 0;">
+      <li>Entra en <strong>platform.openai.com/api-keys</strong>, carga saldo en <em>Settings → Billing</em> (5 € suelen durar mucho).</li>
+      <li>Pulsa <strong>"Create new secret key"</strong>, copia la clave (<code>sk-...</code>) y pégala arriba.</li>
+      <li>Deja vacía la <em>Dirección del servicio</em>, elige el modelo y pulsa <strong>Probar Clave</strong>.</li>
+    </ol>
+    <span><strong>IA local (Ollama):</strong> no envía las facturas fuera del ordenador. Escribe la dirección <code>http://localhost:11434/v1</code>, elige "Otro modelo" y pon el nombre del modelo instalado. No necesita clave. Las IA locales no leen PDFs escaneados como imagen.</span>`,
+  anthropic: `
+    <strong>Cómo configurar Anthropic Claude:</strong>
+    <ol style="padding-left:1.2rem; margin:0.3rem 0;">
+      <li>Entra en <strong>console.anthropic.com/settings/keys</strong> y añade saldo en <em>Billing</em>.</li>
+      <li>Pulsa <strong>"Create Key"</strong>, copia la clave (<code>sk-ant-...</code>) y pégala arriba.</li>
+      <li>Elige el modelo (Haiku es el más económico) y pulsa <strong>Probar Clave</strong>.</li>
+    </ol>`,
+  heuristico_local: `
+    <strong>Modo básico sin Internet:</strong> no necesita clave ni envía nada fuera del ordenador.
+    Lee bien las facturas con texto digital y formato habitual, pero no las escaneadas como foto; esas quedarán en la <em>Bandeja de Revisión</em>.`,
+};
+
+function renderModelOptions(provider, currentModel) {
+  const info = (state.llmCatalog || {})[provider] || { modelos: [], modelo_defecto: "" };
+  const select = document.getElementById("cfg-modelo-select");
+  const custom = document.getElementById("cfg-modelo-custom");
+  const group = document.getElementById("cfg-modelo-group");
+  const endpointGroup = document.getElementById("cfg-endpoint-group");
+
+  group.style.display = provider === "heuristico_local" ? "none" : "";
+  endpointGroup.style.display = provider === "openai_compatible" ? "" : "none";
+  document.getElementById("cfg-provider-guide").innerHTML = PROVIDER_GUIDES[provider] || "";
+
+  select.innerHTML = "";
+  (info.modelos || []).forEach((m) => {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = m.nombre;
+    select.appendChild(opt);
+  });
+  const otherOpt = document.createElement("option");
+  otherOpt.value = CUSTOM_MODEL_VALUE;
+  otherOpt.textContent = "Otro modelo (escribir el nombre a mano)";
+  select.appendChild(otherOpt);
+
+  const wanted = currentModel || info.modelo_defecto;
+  const known = (info.modelos || []).some((m) => m.id === wanted);
+  if (known) {
+    select.value = wanted;
+    custom.value = "";
+  } else if (wanted) {
+    select.value = CUSTOM_MODEL_VALUE;
+    custom.value = wanted;
+  } else {
+    select.value = CUSTOM_MODEL_VALUE;
+    custom.value = "";
+  }
+  updateModelHint();
+}
+
+function updateModelHint() {
+  const provider = document.getElementById("cfg-proveedor-modelo").value;
+  const info = (state.llmCatalog || {})[provider] || { modelos: [] };
+  const selected = document.getElementById("cfg-modelo-select").value;
+  const custom = document.getElementById("cfg-modelo-custom");
+  const hint = document.getElementById("cfg-modelo-hint");
+  if (selected === CUSTOM_MODEL_VALUE) {
+    custom.style.display = "";
+    hint.textContent =
+      "Escribe el identificador exacto que indica el proveedor. Si lo dejas vacío se usará el recomendado.";
+  } else {
+    custom.style.display = "none";
+    const m = (info.modelos || []).find((x) => x.id === selected);
+    hint.textContent = m ? `${m.descripcion} (identificador: ${m.id})` : "";
+  }
+}
+
+function getSelectedModel() {
+  const selected = document.getElementById("cfg-modelo-select").value;
+  if (selected === CUSTOM_MODEL_VALUE) {
+    return document.getElementById("cfg-modelo-custom").value.trim();
+  }
+  return selected || "";
+}
+
 async function loadConfiguration() {
   try {
     const [settings, mailData, rulesData] = await Promise.all([
@@ -580,13 +697,16 @@ async function loadConfiguration() {
       apiFetch("/api/rules"),
     ]);
 
+    state.llmCatalog = settings.catalogo_proveedores || {};
     document.getElementById("cfg-proveedor-modelo").value = settings.proveedor_modelo || "google_ai_studio";
-    document.getElementById("cfg-modelo-llm").value = settings.modelo_llm || "gemini-2.0-flash";
+    document.getElementById("cfg-llm-endpoint").value = settings.llm_endpoint_url || "";
+    renderModelOptions(settings.proveedor_modelo || "google_ai_studio", settings.modelo_llm || "");
     document.getElementById("cfg-estrategia-ocr").value = settings.estrategia_ocr || "vision_llm";
     document.getElementById("cfg-umbral-confianza").value = settings.umbral_confianza ?? 0.85;
     document.getElementById("cfg-umbral-val").textContent = Math.round((settings.umbral_confianza ?? 0.85) * 100) + "%";
     document.getElementById("cfg-capa-almacenamiento").value = settings.capa_almacenamiento || "local";
     document.getElementById("cfg-carpeta-salida").value = settings.carpeta_salida || "";
+    document.getElementById("cfg-carpeta-datos-actual").textContent = settings.carpeta_datos || "-";
 
     const keyConfigured = settings.estado_secretos && settings.estado_secretos.llm_api_key_configurada;
     document.getElementById("cfg-key-status").textContent = keyConfigured
@@ -601,7 +721,7 @@ async function loadConfiguration() {
         <td><strong>${escapeHtml(acc.nombre)}</strong><br/><small style="color:#64748b;">${escapeHtml(MAIL_TYPE_LABELS[acc.tipo_conexion] || acc.tipo_conexion)}</small></td>
         <td>${escapeHtml(acc.email)}</td>
         <td>${acc.credencial_configurada ? '<span class="badge badge-success">Guardada</span>' : '<span class="badge badge-warning">Falta ponerla</span>'}</td>
-        <td><small>${acc.ultima_sincronizacion || "Aún no revisado"}</small></td>
+        <td><small>${escapeHtml(acc.ultima_sincronizacion || "Aún no revisado")}</small></td>
         <td><button class="btn btn-danger btn-sm" onclick="deleteMailAccount(${acc.id})">Quitar</button></td>
       `;
       tbodyMail.appendChild(tr);
@@ -649,7 +769,8 @@ function escapeHtml(str) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /* =========================================================
@@ -717,6 +838,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("filter-categoria").value = "";
     document.getElementById("filter-estado-revision").value = "";
     document.getElementById("filter-estado-pago").value = "";
+    document.getElementById("filter-incluir-sustituidas").checked = false;
     loadInvoicesList();
   });
   document.getElementById("btn-refresh-revision").addEventListener("click", loadReviewInbox);
@@ -867,11 +989,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("cfg-proveedor-modelo").addEventListener("change", (e) => {
-    const prov = e.target.value;
-    const modelInput = document.getElementById("cfg-modelo-llm");
-    if (prov === "google_ai_studio") modelInput.value = "gemini-2.0-flash";
-    else if (prov === "openai_compatible") modelInput.value = "gpt-4o-mini";
-    else if (prov === "anthropic") modelInput.value = "claude-3-5-haiku-latest";
+    // Al cambiar de proveedor se propone su modelo recomendado y su dirección oficial.
+    document.getElementById("cfg-llm-endpoint").value = "";
+    renderModelOptions(e.target.value, "");
+    document.getElementById("cfg-test-result").textContent = "";
+  });
+
+  document.getElementById("cfg-modelo-select").addEventListener("change", () => {
+    updateModelHint();
   });
 
   document.getElementById("btn-test-llm-key").addEventListener("click", async () => {
@@ -884,7 +1009,8 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           proveedor_modelo: document.getElementById("cfg-proveedor-modelo").value,
-          modelo_llm: document.getElementById("cfg-modelo-llm").value,
+          modelo_llm: getSelectedModel(),
+          llm_endpoint_url: document.getElementById("cfg-llm-endpoint").value.trim(),
           llm_api_key: document.getElementById("cfg-llm-api-key").value.trim(),
         }),
       });
@@ -901,7 +1027,8 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     const payload = {
       proveedor_modelo: document.getElementById("cfg-proveedor-modelo").value,
-      modelo_llm: document.getElementById("cfg-modelo-llm").value.trim() || "gemini-2.0-flash",
+      modelo_llm: getSelectedModel(),
+      llm_endpoint_url: document.getElementById("cfg-llm-endpoint").value.trim(),
       estrategia_ocr: document.getElementById("cfg-estrategia-ocr").value,
       umbral_confianza: parseFloat(document.getElementById("cfg-umbral-confianza").value),
       capa_almacenamiento: document.getElementById("cfg-capa-almacenamiento").value,
@@ -975,6 +1102,26 @@ document.addEventListener("DOMContentLoaded", () => {
     showToast(res.created ? `Copia de seguridad guardada en: ${res.backup_path}` : "Todavía no hay datos que copiar.");
   });
 
+  document.getElementById("btn-change-data-dir").addEventListener("click", async () => {
+    const box = document.getElementById("data-dir-status-box");
+    const ruta = document.getElementById("cfg-carpeta-datos-nueva").value.trim();
+    if (!ruta) {
+      box.textContent = "Escribe primero la carpeta nueva.";
+      return;
+    }
+    box.textContent = "Preparando la nueva carpeta...";
+    try {
+      const res = await apiFetch("/api/settings/data-dir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ruta }),
+      });
+      box.textContent = res.mensaje;
+    } catch (err) {
+      box.textContent = "No se pudo cambiar la carpeta: " + err.message;
+    }
+  });
+
   document.getElementById("btn-check-updates").addEventListener("click", async () => {
     const box = document.getElementById("updater-status-box");
     box.textContent = "Comprobando si hay una versión nueva...";
@@ -982,7 +1129,17 @@ document.addEventListener("DOMContentLoaded", () => {
     if (res.error) {
       box.textContent = `No se pudo comprobar ahora mismo: ${res.error}`;
     } else if (res.hay_actualizacion) {
-      box.innerHTML = `<strong style="color:var(--success);">¡Hay una versión nueva disponible (${escapeHtml(res.version_remota)})!</strong> Ya puedes actualizar desde el programa.`;
+      box.innerHTML = `<strong style="color:var(--success);">¡Hay una versión nueva disponible (${escapeHtml(res.version_remota)})!</strong> <button type="button" class="btn btn-primary btn-sm" id="btn-install-update">Instalar ahora</button>`;
+      document.getElementById("btn-install-update").addEventListener("click", async (ev) => {
+        ev.target.disabled = true;
+        box.textContent = "Descargando y comprobando la actualización...";
+        try {
+          const r = await apiFetch("/api/updater/install", { method: "POST" });
+          box.textContent = r.mensaje || "Actualización en curso.";
+        } catch (err) {
+          box.textContent = "No se pudo instalar la actualización: " + err.message;
+        }
+      });
     } else {
       box.textContent = `Ya tienes instalada la última versión disponible (${res.version_actual}).`;
     }

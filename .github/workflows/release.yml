@@ -109,8 +109,12 @@ jobs:
           cp docs/Dossier_Presentacion_Archivero.pdf release_mac/Dossier_Presentacion_Archivero.pdf
           cd release_mac
           zip -r ../dist/Archivero-Mac.zip .
+          cd ../dist
+          # Hashes en formato "<hash>  <nombre>" que lee el actualizador automático
+          shasum -a 256 Archivero ArchiveroUpdater Archivero-Mac.zip > SHA256SUMS-macOS.txt
+          cat SHA256SUMS-macOS.txt
 
-      - name: Subir Archivero-Mac.zip a la Release de GitHub
+      - name: Subir Archivero, ArchiveroUpdater y Archivero-Mac.zip a la Release de GitHub
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -118,4 +122,4 @@ jobs:
           if [ -z "$TAG" ]; then
             TAG="${{ github.ref_name }}"
           fi
-          gh release upload "$TAG" dist/Archivero-Mac.zip --clobber
+          gh release upload "$TAG" dist/Archivero-Mac.zip dist/Archivero dist/ArchiveroUpdater dist/SHA256SUMS-macOS.txt --clobber

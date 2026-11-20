@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,9 @@ from typing import Optional, Union
 from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
+
+# En Windows (build sin consola) evita que cada llamada a pdftoppm/tesseract abra una ventana negra
+_NO_WINDOW_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 INVOICE_KEYWORDS = [
     "factura",
@@ -151,7 +155,9 @@ def _try_local_tesseract_ocr(pdf_bytes: bytes) -> Optional[str]:
                 ["pdftoppm", "-png", "-r", "200", str(pdf_file), str(tmp_path / "page")],
                 check=True,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 timeout=30,
+                creationflags=_NO_WINDOW_FLAGS,
             )
             texts: list[str] = []
             for img_path in sorted(tmp_path.glob("page*.png")):
@@ -160,7 +166,9 @@ def _try_local_tesseract_ocr(pdf_bytes: bytes) -> Optional[str]:
                     check=False,
                     capture_output=True,
                     text=True,
+                    stdin=subprocess.DEVNULL,
                     timeout=30,
+                    creationflags=_NO_WINDOW_FLAGS,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     texts.append(proc.stdout.strip())

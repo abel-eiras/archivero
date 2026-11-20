@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
@@ -172,7 +173,53 @@ MIGRATIONS: List[Tuple[int, str, str]] = [
         );
         """,
     ),
+    (
+        2,
+        "Facturas sustituidas: una factura nueva con el mismo proveedor y número reemplaza a la anterior",
+        """
+        ALTER TABLE facturas ADD COLUMN sustituida_por INTEGER REFERENCES facturas(id) ON DELETE SET NULL;
+        ALTER TABLE facturas ADD COLUMN sustituye_a INTEGER REFERENCES facturas(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_facturas_sustituida_por ON facturas(sustituida_por);
+        """,
+    ),
 ]
+
+
+def sender_matches_pattern(pattern: Optional[str], sender_email: Optional[str]) -> bool:
+    """
+    Coincidencia EXACTA de remitente (sin subcadenas):
+    - Con '@' (p. ej. 'facturas@cofares.es'): la dirección completa, sin distinguir mayúsculas.
+    - Sin '@' o con '@' inicial ('cofares.es' / '@cofares.es'): el dominio del remitente
+      es ese dominio o un subdominio suyo ('pedidos.cofares.es'); 'cofares.es.evil.com' o
+      'notcofares.es' no coinciden.
+    """
+    pat = (pattern or "").strip().lower()
+    sender = (sender_email or "").strip().lower()
+    if not pat or not sender or "@" not in sender:
+        return False
+    if pat.startswith("@"):
+        pat = pat[1:]
+    elif "@" in pat:
+        return sender == pat
+    pat = pat.strip(".")
+    if not pat:
+        return False
+    domain = sender.rsplit("@", 1)[1].strip(".")
+    return domain == pat or domain.endswith("." + pat)
+
+
+def normalize_invoice_number(numero: Optional[str]) -> str:
+    """'FRA 2026-001' y 'fra2026/001' se consideran el mismo número."""
+    return re.sub(r"[\s\-_./\\]+", "", (numero or "")).upper()
+
+
+def normalize_supplier_name(nombre: Optional[str]) -> str:
+    cleaned = re.sub(r"[^\w]+", " ", (nombre or "").lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+# Campos de factura que el usuario puede vaciar explícitamente (None) al editar
+NULLABLE_INVOICE_FIELDS = frozenset({"fecha_emision", "fecha_vencimiento", "notas", "nif", "numero_factura"})
 
 
 def _now_iso() -> str:
@@ -466,7 +513,9 @@ class Database:
             if not pat:
                 continue
             matched = False
-            if r["tipo_regla"] in ("remitente_proveedor", "remitente_categoria") and pat in sender_low:
+            if r["tipo_regla"] in ("remitente_proveedor", "remitente_categoria") and sender_matches_pattern(
+                pat, sender_low
+            ):
                 matched = True
             elif r["tipo_regla"] == "nif_categoria" and (pat.upper() == nif_up or pat in supplier_low):
                 matched = True
@@ -496,7 +545,17 @@ class Database:
     def get_invoice_by_id(self, invoice_id: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM facturas WHERE id = ? LIMIT 1", (invoice_id,)
+                """
+                SELECT f.*,
+                       COALESCE((
+                           SELECT SUM(vc.importe_asignado)
+                           FROM vinculos_conciliacion vc
+                           WHERE vc.factura_id = f.id AND vc.confirmado = 1
+                       ), 0.0) AS importe_conciliado
+                FROM facturas f
+                WHERE f.id = ? LIMIT 1
+                """,
+                (invoice_id,),
             ).fetchone()
             return self._deserialize_invoice_row(row) if row else None
 
@@ -567,7 +626,9 @@ class Database:
 
         merged = dict(current)
         for k, v in updates.items():
-            if v is not None:
+            # Los campos anulables pueden vaciarse explícitamente con None;
+            # en el resto, None significa "no cambiar".
+            if v is not None or k in NULLABLE_INVOICE_FIELDS:
                 merged[k] = v
 
         proveedor_id = merged.get("proveedor_id")
@@ -637,9 +698,83 @@ class Database:
             )
         return self.get_invoice_by_id(invoice_id)
 
+    def find_replaceable_invoice(
+        self, numero_factura: str, nif: str = "", proveedor_nombre: str = "", exclude_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Busca una factura ACTIVA (no sustituida) del mismo proveedor con el mismo número.
+        Proveedor: por NIF si ambas lo tienen; si no, por nombre normalizado.
+        Número: sin distinguir mayúsculas, espacios, guiones, puntos ni barras.
+        """
+        num_key = normalize_invoice_number(numero_factura)
+        if not num_key:
+            return None
+        nif_key = (nif or "").strip().upper()
+        name_key = normalize_supplier_name(proveedor_nombre)
+        if not nif_key and not name_key:
+            return None
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, nif, proveedor_nombre, numero_factura FROM facturas "
+                "WHERE sustituida_por IS NULL ORDER BY id DESC"
+            ).fetchall()
+        for r in rows:
+            if exclude_id is not None and int(r["id"]) == exclude_id:
+                continue
+            if normalize_invoice_number(r["numero_factura"]) != num_key:
+                continue
+            other_nif = (r["nif"] or "").strip().upper()
+            if nif_key and other_nif:
+                same_supplier = nif_key == other_nif
+            else:
+                same_supplier = bool(name_key) and normalize_supplier_name(r["proveedor_nombre"]) == name_key
+            if same_supplier:
+                return self.get_invoice_by_id(int(r["id"]))
+        return None
+
+    def mark_invoice_replaced(self, old_id: int, new_id: int) -> None:
+        """Marca la factura antigua como sustituida (se conserva en el historial con su archivo)."""
+        now = _now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE facturas SET sustituida_por = ?, updated_at = ? WHERE id = ?", (new_id, now, old_id)
+            )
+            conn.execute(
+                "UPDATE facturas SET sustituye_a = ?, updated_at = ? WHERE id = ?", (old_id, now, new_id)
+            )
+
+    def invoice_has_reconciliation_links(self, invoice_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM vinculos_conciliacion WHERE factura_id = ? LIMIT 1", (invoice_id,)
+            ).fetchone()
+            return row is not None
+
     def delete_invoice(self, invoice_id: int) -> bool:
         with self.connect() as conn:
+            mov_rows = conn.execute(
+                "SELECT DISTINCT movimiento_id FROM vinculos_conciliacion WHERE factura_id = ?",
+                (invoice_id,),
+            ).fetchall()
+            affected_movs = [int(r["movimiento_id"]) for r in mov_rows]
+            # Borrado explícito de vínculos (por si la conexión no aplica ON DELETE CASCADE)
+            conn.execute("DELETE FROM vinculos_conciliacion WHERE factura_id = ?", (invoice_id,))
             cur = conn.execute("DELETE FROM facturas WHERE id = ?", (invoice_id,))
+            # Los movimientos que se quedan sin ningún vínculo vuelven a 'pendiente'
+            for mov_id in affected_movs:
+                remaining = conn.execute(
+                    "SELECT 1 FROM vinculos_conciliacion WHERE movimiento_id = ? LIMIT 1",
+                    (mov_id,),
+                ).fetchone()
+                if remaining is None:
+                    conn.execute(
+                        """
+                        UPDATE movimientos_bancarios
+                        SET estado_conciliacion = 'pendiente', diferencia_pendiente = 0.0
+                        WHERE id = ?
+                        """,
+                        (mov_id,),
+                    )
             return cur.rowcount > 0
 
     def list_invoices(
@@ -653,9 +788,14 @@ class Database:
         fecha_hasta: Optional[str] = None,
         busqueda: Optional[str] = None,
         limit: int = 500,
+        incluir_sustituidas: bool = False,
     ) -> List[Dict[str, Any]]:
         clauses: List[str] = ["1=1"]
         params: List[Any] = []
+
+        # Las facturas sustituidas por otra (mismo proveedor y número) se ocultan por defecto
+        if not incluir_sustituidas:
+            clauses.append("f.sustituida_por IS NULL")
 
         if estado_revision:
             clauses.append("f.estado_revision = ?")
@@ -1021,6 +1161,7 @@ class Database:
                     SUM(CASE WHEN estado_pago != 'pagada' THEN 1 ELSE 0 END) AS facturas_impagadas,
                     COALESCE(SUM(CASE WHEN estado_pago != 'pagada' THEN total ELSE 0.0 END), 0.0) AS importe_pendiente_pago
                 FROM facturas
+                WHERE sustituida_por IS NULL
                 """
             ).fetchone()
 
@@ -1035,6 +1176,7 @@ class Database:
                            ROUND(SUM(iva), 2) AS iva,
                            ROUND(SUM(total), 2) AS total
                     FROM facturas
+                    WHERE sustituida_por IS NULL
                     GROUP BY mes
                     ORDER BY mes DESC
                     LIMIT 12
@@ -1051,6 +1193,7 @@ class Database:
                            COUNT(*) AS cantidad,
                            ROUND(SUM(total), 2) AS total
                     FROM facturas
+                    WHERE sustituida_por IS NULL
                     GROUP BY categoria
                     ORDER BY total DESC
                     """
@@ -1067,6 +1210,7 @@ class Database:
                            COUNT(*) AS cantidad,
                            ROUND(SUM(total), 2) AS total
                     FROM facturas
+                    WHERE sustituida_por IS NULL
                     GROUP BY proveedor_nombre
                     ORDER BY total DESC
                     LIMIT 10
@@ -1082,7 +1226,7 @@ class Database:
                     SELECT id, proveedor_nombre, numero_factura, fecha_emision,
                            fecha_vencimiento, total, estado_pago, categoria
                     FROM facturas
-                    WHERE estado_pago != 'pagada'
+                    WHERE sustituida_por IS NULL AND estado_pago != 'pagada'
                       AND fecha_vencimiento IS NOT NULL
                       AND fecha_vencimiento != ''
                       AND fecha_vencimiento <= ?
@@ -1101,7 +1245,7 @@ class Database:
                     SELECT id, proveedor_nombre, numero_factura, fecha_emision,
                            fecha_vencimiento, total, estado_pago, categoria
                     FROM facturas
-                    WHERE estado_pago != 'pagada'
+                    WHERE sustituida_por IS NULL AND estado_pago != 'pagada'
                     ORDER BY COALESCE(fecha_vencimiento, fecha_emision) ASC
                     LIMIT 20
                     """

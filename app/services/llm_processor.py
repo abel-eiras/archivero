@@ -13,7 +13,16 @@ from typing import Any, Dict, List, Optional, Union
 
 import httpx
 
-from app.config import CATEGORIAS_INICIALES, TIPOS_DOCUMENTO
+from app.config import (
+    ANTHROPIC_ENDPOINT,
+    CATEGORIAS_INICIALES,
+    GOOGLE_ENDPOINT,
+    LLM_PROVIDERS,
+    OPENAI_ENDPOINT,
+    TIPOS_DOCUMENTO,
+    resolve_llm_endpoint,
+    resolve_llm_model,
+)
 from app.models.schemas import InvoiceExtraction, ProcessedPDFResult, ValidationResult
 from app.services.pdf_extractor import PDFContent, extract_pdf_content
 
@@ -89,9 +98,9 @@ class GoogleAIStudioProvider(BaseLLMProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.0-flash",
-        endpoint_url: str = "https://generativelanguage.googleapis.com/v1beta",
-        timeout: float = 45.0,
+        model: str = LLM_PROVIDERS["google_ai_studio"]["modelo_defecto"],
+        endpoint_url: str = GOOGLE_ENDPOINT,
+        timeout: float = 60.0,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -126,7 +135,6 @@ class GoogleAIStudioProvider(BaseLLMProvider):
                 }
             )
 
-        url = f"{self.endpoint_url}/models/{self.model}:generateContent"
         payload = {
             "contents": [{"parts": parts}],
             "generationConfig": {
@@ -134,20 +142,37 @@ class GoogleAIStudioProvider(BaseLLMProvider):
                 "responseMimeType": "application/json",
             },
         }
+        # La clave va en cabecera (no en la URL) para que nunca aparezca en logs ni mensajes de error.
+        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
 
         with httpx.Client(timeout=self.timeout) as client:
-            resp = client.post(url, params={"key": self.api_key}, json=payload)
+            resp = client.post(self._url(self.model), headers=headers, json=payload)
+            fallback_model = LLM_PROVIDERS["google_ai_studio"]["modelo_defecto"]
+            if resp.status_code == 404 and self.model != fallback_model:
+                # El modelo elegido ya no existe (Google retira versiones): reintentar con el alias estable.
+                logger.warning(
+                    "El modelo '%s' ya no está disponible en Google; reintentando con '%s'.",
+                    self.model,
+                    fallback_model,
+                )
+                self.model = fallback_model
+                resp = client.post(self._url(self.model), headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
-        raw_text = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "{}")
-        )
+        candidates = data.get("candidates") or []
+        if not candidates:
+            feedback = data.get("promptFeedback") or {}
+            raise ValueError(f"Gemini no devolvió respuesta (motivo: {feedback.get('blockReason', 'desconocido')}).")
+        resp_parts = (candidates[0].get("content") or {}).get("parts") or []
+        raw_text = "".join(
+            part.get("text", "") for part in resp_parts if not part.get("thought")
+        ) or "{}"
         parsed = _parse_json_from_llm_output(raw_text)
         return InvoiceExtraction(**parsed)
+
+    def _url(self, model: str) -> str:
+        return f"{self.endpoint_url}/models/{model}:generateContent"
 
 
 class OpenAICompatibleProvider(BaseLLMProvider):
@@ -158,9 +183,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4o-mini",
-        endpoint_url: str = "https://api.openai.com/v1",
-        timeout: float = 45.0,
+        model: str = LLM_PROVIDERS["openai_compatible"]["modelo_defecto"],
+        endpoint_url: str = OPENAI_ENDPOINT,
+        timeout: float = 90.0,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -182,22 +207,25 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             f"Nombre del archivo: {pdf_content.filename}\n\n"
             f"Contenido de la factura:\n{pdf_content.text}"
         )
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model,
-            "temperature": 0.1,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_content},
             ],
         }
+        # Los modelos de razonamiento de OpenAI (gpt-5*, o1/o3/o4) rechazan temperature distinta de 1.
+        if not self.model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+            payload["temperature"] = 0.1
 
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
-        raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        choices = data.get("choices") or [{}]
+        raw_text = (choices[0].get("message") or {}).get("content") or "{}"
         parsed = _parse_json_from_llm_output(raw_text)
         return InvoiceExtraction(**parsed)
 
@@ -210,9 +238,9 @@ class AnthropicProvider(BaseLLMProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "claude-3-5-haiku-latest",
-        endpoint_url: str = "https://api.anthropic.com/v1",
-        timeout: float = 45.0,
+        model: str = LLM_PROVIDERS["anthropic"]["modelo_defecto"],
+        endpoint_url: str = ANTHROPIC_ENDPOINT,
+        timeout: float = 120.0,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -256,10 +284,12 @@ class AnthropicProvider(BaseLLMProvider):
             )
         content_blocks.append({"type": "text", "text": prompt})
 
+        # Los modelos actuales de Claude razonan antes de responder y rechazan "temperature";
+        # se usa esfuerzo bajo (extracción sencilla) y margen de tokens suficiente para la respuesta.
         payload = {
             "model": self.model,
-            "max_tokens": 1024,
-            "temperature": 0.1,
+            "max_tokens": 16000,
+            "output_config": {"effort": "low"},
             "messages": [{"role": "user", "content": content_blocks}],
         }
 
@@ -268,8 +298,10 @@ class AnthropicProvider(BaseLLMProvider):
             resp.raise_for_status()
             data = resp.json()
 
+        if data.get("stop_reason") == "refusal":
+            raise ValueError("Claude rechazó procesar este documento.")
         blocks = data.get("content") or []
-        raw_text = blocks[0].get("text", "{}") if blocks else "{}"
+        raw_text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text") or "{}"
         parsed = _parse_json_from_llm_output(raw_text)
         return InvoiceExtraction(**parsed)
 
@@ -495,7 +527,7 @@ class LLMProcessor:
         self,
         provider_type: str = "google_ai_studio",
         api_key: Optional[str] = None,
-        model: str = "gemini-2.0-flash",
+        model: str = "",
         endpoint_url: Optional[str] = None,
         ocr_strategy: str = "vision_llm",
         umbral_confianza: float = 0.85,
@@ -503,31 +535,36 @@ class LLMProcessor:
     ) -> None:
         self.provider_type = provider_type
         self.api_key = (api_key or "").strip()
-        self.model = model
-        self.endpoint_url = endpoint_url
+        self.model = resolve_llm_model(provider_type, model)
+        self.endpoint_url = resolve_llm_endpoint(provider_type, endpoint_url)
         self.ocr_strategy = ocr_strategy
         self.umbral_confianza = umbral_confianza
         self.categories = categories or CATEGORIAS_INICIALES
 
     def _build_provider(self) -> BaseLLMProvider:
-        if self.provider_type == "heuristico_local" or not self.api_key:
+        if self.provider_type == "heuristico_local":
             return HeuristicInvoiceExtractor()
         if self.provider_type == "openai_compatible":
+            # Una IA local (Ollama, LM Studio...) en dirección propia no necesita clave.
+            if not self.api_key and self.endpoint_url == OPENAI_ENDPOINT:
+                return HeuristicInvoiceExtractor()
             return OpenAICompatibleProvider(
                 api_key=self.api_key,
-                model=self.model or "gpt-4o-mini",
-                endpoint_url=self.endpoint_url or "https://api.openai.com/v1",
+                model=self.model,
+                endpoint_url=self.endpoint_url,
             )
+        if not self.api_key:
+            return HeuristicInvoiceExtractor()
         if self.provider_type == "anthropic":
             return AnthropicProvider(
                 api_key=self.api_key,
-                model=self.model or "claude-3-5-haiku-latest",
-                endpoint_url=self.endpoint_url or "https://api.anthropic.com/v1",
+                model=self.model,
+                endpoint_url=self.endpoint_url,
             )
         return GoogleAIStudioProvider(
             api_key=self.api_key,
-            model=self.model or "gemini-2.0-flash",
-            endpoint_url=self.endpoint_url or "https://generativelanguage.googleapis.com/v1beta",
+            model=self.model,
+            endpoint_url=self.endpoint_url,
         )
 
     def process_pdf(
@@ -564,7 +601,7 @@ class LLMProcessor:
             fallback = HeuristicInvoiceExtractor()
             extraction = fallback.extract_invoice(pdf_content, categories=self.categories)
             provider_used = f"{provider.provider_name}->heuristico_local"
-            fallback_warning = f"Se usó extracción local de respaldo por error en API externa: {exc}"
+            fallback_warning = f"Se usó extracción local de respaldo por error en la IA externa: {describe_llm_error(exc)}"
 
         # Aplicar reglas por remitente o proveedor si se han configurado
         if sender_rule_overrides:
@@ -601,6 +638,41 @@ class LLMProcessor:
 # =====================================================================
 # Funciones auxiliares de parseo heurístico y limpieza de JSON
 # =====================================================================
+
+
+def describe_llm_error(exc: Exception) -> str:
+    """Traduce un error de la API del proveedor a un mensaje claro (sin claves ni URLs internas)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        detail = ""
+        try:
+            body = exc.response.json()
+            err = body.get("error") if isinstance(body, dict) else None
+            if isinstance(err, dict):
+                detail = str(err.get("message") or "")
+            elif isinstance(err, str):
+                detail = err
+        except Exception:
+            detail = ""
+        detail = detail[:300]
+        if code in (401, 403):
+            msg = "La clave (API Key) no es válida, ha caducado o no tiene permiso para este modelo."
+        elif code == 404:
+            msg = "El modelo elegido no existe o ya no está disponible. Elige otro en Configuración."
+        elif code == 429:
+            msg = "Se ha superado el límite de usos (cuota gratuita diaria o por minuto). Espera un rato o revisa tu plan."
+        elif code == 400:
+            msg = "El proveedor rechazó la petición (revisa la clave y el modelo elegido)."
+        elif code >= 500:
+            msg = "El servicio del proveedor está caído o saturado temporalmente. Inténtalo más tarde."
+        else:
+            msg = f"Error HTTP {code} del proveedor."
+        return f"{msg} [{code}{': ' + detail if detail else ''}]"
+    if isinstance(exc, httpx.TimeoutException):
+        return "El proveedor tardó demasiado en responder (tiempo de espera agotado)."
+    if isinstance(exc, httpx.HTTPError):
+        return "No se pudo conectar con el proveedor. Comprueba la conexión a Internet o la dirección del servicio."
+    return str(exc)[:300]
 
 
 def _parse_json_from_llm_output(raw_text: str) -> Dict[str, Any]:

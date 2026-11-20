@@ -14,7 +14,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
-from app.config import APP_VERSION, BASE_DIR, DEFAULT_STAGING_DIR
+from app.config import APP_VERSION, BASE_DIR, DEFAULT_BACKUP_DIR, DEFAULT_DB_PATH, DEFAULT_STAGING_DIR
+
+# Nombres exactos de los ejecutables publicados en cada release
+WINDOWS_ASSET_NAME = "Archivero.exe"
+MAC_ASSET_NAME = "Archivero"
+_NO_WINDOW_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,16 @@ def extract_sha256_from_release_body(release_body: str, asset_name: str) -> Opti
     if len(all_hashes) == 1:
         return all_hashes[0].lower()
     return None
+
+
+def parse_sha256sums(text: str) -> Dict[str, str]:
+    """Parsea un SHA256SUMS.txt ('<hash>  <nombre>' o '<hash> *<nombre>') a {nombre: hash}."""
+    result: Dict[str, str] = {}
+    for line in (text or "").lstrip("\ufeff").splitlines():
+        m = re.match(r"^\s*([a-fA-F0-9]{64})\s+\*?(.+?)\s*$", line)
+        if m:
+            result[m.group(2)] = m.group(1).lower()
+    return result
 
 
 class UpdaterService:
@@ -121,7 +136,11 @@ class UpdaterService:
         asset = self._select_platform_asset(assets)
         asset_name = asset.get("name", "") if asset else ""
         download_url = asset.get("browser_download_url", "") if asset else ""
-        expected_hash = extract_sha256_from_release_body(body, asset_name)
+        expected_hash = ""
+        if asset_name:
+            expected_hash = self._fetch_expected_hash_from_sums(assets, asset_name) or ""
+            if not expected_hash:
+                expected_hash = extract_sha256_from_release_body(body, asset_name) or ""
 
         newer = is_newer_version(tag_name, self.current_version)
         return {
@@ -136,6 +155,35 @@ class UpdaterService:
             "publicado_en": release.get("published_at") or "",
         }
 
+    def _fetch_expected_hash_from_sums(self, assets: list[Dict[str, Any]], asset_name: str) -> Optional[str]:
+        """Descarga los SHA256SUMS*.txt publicados en la release y devuelve el hash del asset."""
+        sums_assets = [
+            a
+            for a in assets
+            if re.fullmatch(r"sha256sums.*\.txt", (a.get("name") or "").lower())
+        ]
+        # SHA256SUMS.txt primero
+        sums_assets.sort(key=lambda a: 0 if (a.get("name") or "").lower() == "sha256sums.txt" else 1)
+        for a in sums_assets:
+            url = a.get("browser_download_url") or ""
+            if not url:
+                continue
+            try:
+                text = self._download_text(url)
+            except Exception as exc:
+                logger.warning("No se pudo descargar %s: %s", a.get("name"), exc)
+                continue
+            found = parse_sha256sums(text).get(asset_name)
+            if found:
+                return found
+        return None
+
+    def _download_text(self, url: str) -> str:
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            resp = client.get(url, headers=self._headers())
+            resp.raise_for_status()
+            return resp.content.decode("utf-8-sig", errors="replace")
+
     def download_and_verify_update(self, download_url: str, expected_sha256: str, filename: str = "update.bin") -> Path:
         """
         Descarga el paquete de actualización en la carpeta temporal y verifica obligatoriamente su hash SHA-256.
@@ -147,10 +195,14 @@ class UpdaterService:
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         dest_file = self.staging_dir / filename
 
-        with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-            resp = client.get(download_url, headers=self._headers())
-            resp.raise_for_status()
-            dest_file.write_bytes(resp.content)
+        headers = self._headers()
+        headers["Accept"] = "application/octet-stream"
+        with httpx.Client(timeout=300.0, follow_redirects=True) as client:
+            with client.stream("GET", download_url, headers=headers) as resp:
+                resp.raise_for_status()
+                with dest_file.open("wb") as fh:
+                    for chunk in resp.iter_bytes(65536):
+                        fh.write(chunk)
 
         if not verify_sha256_checksum(dest_file, expected_sha256):
             actual = compute_file_sha256(dest_file)
@@ -169,14 +221,14 @@ class UpdaterService:
         current_pid: Optional[int] = None,
     ) -> subprocess.Popen:
         """
-        Lanza el actualizador independiente (updater.py) para que espere al cierre de este proceso,
-        verifique el hash, reemplace el ejecutable y relance la aplicación (Sección 11).
+        Lanza el actualizador independiente para que espere al cierre de este proceso,
+        verifique el hash, haga copia de la base de datos, reemplace el ejecutable y
+        relance la aplicación (Sección 11).
+        - Empaquetado (PyInstaller): usa ArchiveroUpdater(.exe) situado junto al ejecutable principal.
+        - Desde código fuente: usa `python updater.py`.
         """
-        updater_script = BASE_DIR / "updater.py"
         pid = current_pid if current_pid is not None else os.getpid()
-        cmd = [
-            sys.executable,
-            str(updater_script),
+        common_args = [
             "--source",
             str(downloaded_file),
             "--target",
@@ -185,20 +237,54 @@ class UpdaterService:
             expected_sha256.strip().lower(),
             "--wait-pid",
             str(pid),
+            "--db-path",
+            str(DEFAULT_DB_PATH),
+            "--backup-dir",
+            str(DEFAULT_BACKUP_DIR),
         ]
-        return subprocess.Popen(cmd, close_fds=True)
+        env = dict(os.environ)
+        if getattr(sys, "frozen", False):
+            updater_name = "ArchiveroUpdater.exe" if sys.platform == "win32" else "ArchiveroUpdater"
+            updater_exe = Path(sys.executable).resolve().parent / updater_name
+            if not updater_exe.is_file():
+                raise FileNotFoundError(
+                    f"No se encuentra {updater_name} junto a {Path(sys.executable).name}. "
+                    "Descarga de nuevo el paquete completo desde GitHub Releases."
+                )
+            cmd = [str(updater_exe), *common_args, "--relaunch"]
+            # El actualizador es otro ejecutable PyInstaller: que no herede nuestro entorno de extracción
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        else:
+            cmd = [sys.executable, str(BASE_DIR / "updater.py"), *common_args]
+
+        flags = _NO_WINDOW_FLAGS
+        if sys.platform == "win32":
+            flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return subprocess.Popen(
+            cmd,
+            close_fds=True,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
 
     @staticmethod
-    def _select_platform_asset(assets: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _select_platform_asset(
+        assets: list[Dict[str, Any]], system_name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Elige el ejecutable exacto de la plataforma: 'Archivero.exe' en Windows y 'Archivero'
+        en macOS (nunca el .zip ni el actualizador). En otras plataformas no hay ejecutable.
+        """
         if not assets:
             return None
-        sys_name = platform.system().lower()
+        sys_name = (system_name or platform.system()).lower()
+        wanted = {"windows": WINDOWS_ASSET_NAME, "darwin": MAC_ASSET_NAME}.get(sys_name)
+        if not wanted:
+            return None
         for a in assets:
-            name = (a.get("name") or "").lower()
-            if sys_name == "windows" and (name.endswith(".exe") or "win" in name):
+            if (a.get("name") or "") == wanted:
                 return a
-            if sys_name == "darwin" and ("mac" in name or "darwin" in name or name.endswith(".dmg")):
-                return a
-            if sys_name == "linux" and ("linux" in name or name.endswith(".appimage") or name.endswith(".tar.gz")):
-                return a
-        return assets[0]
+        return None

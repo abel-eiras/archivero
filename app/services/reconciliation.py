@@ -108,8 +108,19 @@ class BankReconciliationService:
         - Marca automáticamente los de alta confianza (>= umbral) y deja como propuesta los dudosos.
         """
         pending_txs = self.db.list_bank_transactions(estado_conciliacion="pendiente")
+        # Facturas que ya tienen una propuesta sin confirmar en otro movimiento: no se vuelven a
+        # proponer para evitar que una misma factura quede asignada (y confirmada) dos veces.
+        with self.db.connect() as conn:
+            proposed_rows = conn.execute(
+                "SELECT DISTINCT factura_id FROM vinculos_conciliacion WHERE confirmado = 0"
+            ).fetchall()
+        already_proposed_ids = {int(r["factura_id"]) for r in proposed_rows}
         candidate_invoices = [
-            inv for inv in self.db.list_invoices(limit=1000) if inv.get("estado_pago") != "pagada"
+            inv
+            for inv in self.db.list_invoices(limit=1000)
+            if inv.get("estado_pago") != "pagada"
+            and inv["id"] not in already_proposed_ids
+            and abs(float(inv.get("importe_pendiente") or 0.0)) >= 0.01
         ]
         rules = [
             r for r in self.db.list_rules(active_only=True) if r.get("tipo_regla") == "concepto_proveedor"
@@ -150,6 +161,8 @@ class BankReconciliationService:
                     confirmado=False,
                     diferencia_pendiente=0.0,
                 )
+                for inv in matched_invoices:
+                    used_invoice_ids.add(inv["id"])
                 proposed += 1
 
         return {
@@ -398,7 +411,14 @@ class BankReconciliationService:
         estado_mov = "conciliado" if confirmado else "propuesto"
         invoice_ids: List[int] = []
 
+        previous_invoice_ids: List[int] = []
+
         with self.db.connect() as conn:
+            prev_rows = conn.execute(
+                "SELECT factura_id FROM vinculos_conciliacion WHERE movimiento_id = ?",
+                (movimiento_id,),
+            ).fetchall()
+            previous_invoice_ids = [int(r["factura_id"]) for r in prev_rows]
             conn.execute(
                 "DELETE FROM vinculos_conciliacion WHERE movimiento_id = ?",
                 (movimiento_id,),
@@ -427,9 +447,12 @@ class BankReconciliationService:
                 (estado_mov, round(diferencia_pendiente, 2), notas, notas, movimiento_id),
             )
 
+        # Recalcular también las facturas que estaban vinculadas antes y han dejado de estarlo
+        to_recalc = set(previous_invoice_ids)
         if confirmado:
-            for inv_id in invoice_ids:
-                self.db.recalculate_invoice_payment_status(inv_id)
+            to_recalc.update(invoice_ids)
+        for inv_id in sorted(to_recalc):
+            self.db.recalculate_invoice_payment_status(inv_id)
 
 
 def _parse_date(date_str: Optional[str]) -> Optional[dt.date]:

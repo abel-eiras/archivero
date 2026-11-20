@@ -16,7 +16,7 @@ def test_full_web_api_and_phase0_demo_flow(tmp_path: Path):
         start_background_poller=False,
     )
     app.state.db.set_settings({"carpeta_salida": str(tmp_path / "archivo_facturas")})
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     # 1. Healthcheck y página principal HTML
     r_health = client.get("/health")

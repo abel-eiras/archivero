@@ -60,7 +60,7 @@ class InvoiceIngestionPipeline:
         return LLMProcessor(
             provider_type=settings.get("proveedor_modelo") or "google_ai_studio",
             api_key=self.llm_api_key,
-            model=settings.get("modelo_llm") or "gemini-2.0-flash",
+            model=settings.get("modelo_llm") or "",
             endpoint_url=settings.get("llm_endpoint_url"),
             ocr_strategy=settings.get("estrategia_ocr") or "vision_llm",
             umbral_confianza=float(settings.get("umbral_confianza") or 0.85),
@@ -148,6 +148,24 @@ class InvoiceIngestionPipeline:
         )
 
         errores_y_avisos = list(val.errores) + [f"Aviso: {w}" for w in val.advertencias]
+        estado_revision = val.estado_revision
+
+        # Factura rectificativa: mismo proveedor y mismo número que una factura activa -> la sustituye
+        replaced = self.db.find_replaceable_invoice(
+            numero_factura=ext.numero_factura,
+            nif=ext.nif,
+            proveedor_nombre=ext.proveedor,
+        )
+        if replaced:
+            errores_y_avisos.append(
+                f"Aviso: Sustituye a la factura #{replaced['id']} (mismo proveedor y número)."
+            )
+            if self.db.invoice_has_reconciliation_links(int(replaced["id"])):
+                estado_revision = "pendiente_revision"
+                errores_y_avisos.append(
+                    f"Aviso: La factura sustituida #{replaced['id']} tenía pagos del banco unidos; "
+                    "revisa la conciliación y une el pago a esta factura si corresponde."
+                )
         invoice_id = self.db.insert_invoice(
             {
                 "proveedor_nombre": ext.proveedor,
@@ -161,7 +179,7 @@ class InvoiceIngestionPipeline:
                 "moneda": ext.moneda,
                 "tipo_documento": ext.tipo_documento,
                 "categoria": ext.categoria,
-                "estado_revision": val.estado_revision,
+                "estado_revision": estado_revision,
                 "estado_pago": "pendiente",
                 "nivel_confianza": val.confianza_ajustada,
                 "hash_pdf": pdf_hash,
@@ -172,11 +190,15 @@ class InvoiceIngestionPipeline:
                 "errores_validacion": errores_y_avisos,
             }
         )
+        detail = f"Factura procesada ({estado_revision}, confianza {val.confianza_ajustada:.0%})."
+        if replaced:
+            self.db.mark_invoice_replaced(old_id=int(replaced["id"]), new_id=invoice_id)
+            detail += f" Sustituye a la factura #{replaced['id']}."
         saved_invoice = self.db.get_invoice_by_id(invoice_id)
         return IngestionResult(
             status="insertada",
             invoice_id=invoice_id,
             invoice=saved_invoice,
             hash_pdf=pdf_hash,
-            detail=f"Factura procesada ({val.estado_revision}, confianza {val.confianza_ajustada:.0%}).",
+            detail=detail,
         )

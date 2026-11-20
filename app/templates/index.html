@@ -247,6 +247,11 @@
                 <option value="pagada">Pagada por completo</option>
               </select>
             </div>
+            <div class="form-group">
+              <label for="filter-incluir-sustituidas" style="display:flex;align-items:center;gap:0.35rem;">
+                <input type="checkbox" id="filter-incluir-sustituidas" /> Mostrar facturas sustituidas
+              </label>
+            </div>
             <button class="btn btn-primary" id="btn-apply-filters">Buscar</button>
             <button class="btn btn-secondary" id="btn-clear-filters">Ver todas</button>
           </div>
@@ -443,6 +448,21 @@
                 <span class="field-hint">Puedes cambiar de proveedor cuando quieras. Todos leen proveedor, NIF, fechas, Base, IVA, Recargo de Equivalencia e IRPF.</span>
               </div>
 
+              <div class="form-group" id="cfg-modelo-group" style="margin-bottom:0.9rem;">
+                <label for="cfg-modelo-select">Modelo de IA que leerá las facturas</label>
+                <select id="cfg-modelo-select"></select>
+                <input type="text" id="cfg-modelo-custom" placeholder="Escribe el nombre exacto del modelo (ej. llama3.1 o gemini-flash-latest)" style="margin-top:0.4rem; display:none;" />
+                <span id="cfg-modelo-hint" class="field-hint"></span>
+              </div>
+
+              <div class="form-group" id="cfg-endpoint-group" style="margin-bottom:0.9rem; display:none;">
+                <label for="cfg-llm-endpoint">Dirección del servicio (solo para IA local o servicios compatibles)</label>
+                <input type="text" id="cfg-llm-endpoint" placeholder="Déjalo vacío para usar OpenAI. Ollama local: http://localhost:11434/v1" />
+                <span class="field-hint">Si usas <strong>Ollama</strong> en este ordenador, escribe <code>http://localhost:11434/v1</code>, elige "Otro modelo" arriba y pon el nombre del modelo descargado (ej. <code>llama3.1</code>). En ese caso no hace falta clave.</span>
+              </div>
+
+              <div id="cfg-provider-guide" class="alert alert-info" style="margin-bottom:0.9rem; font-size:0.84rem;"></div>
+
               <div class="form-group" style="margin-bottom:0.9rem;">
                 <label>Clave de conexión (API Key) del proveedor elegido</label>
                 <div style="display:flex; gap:0.5rem; align-items:center;">
@@ -517,7 +537,6 @@
                 <span class="field-hint">Dentro de esta carpeta el programa creará solo las subcarpetas: <strong>Año → Mes → Categoría → Proveedor</strong>.</span>
               </div>
 
-              <input type="hidden" id="cfg-modelo-llm" value="gemini-2.0-flash" />
               <button type="submit" class="btn btn-primary">Guardar Opciones</button>
             </form>
           </div>
@@ -574,8 +593,8 @@
 
               <div class="form-group" style="margin-bottom:0.85rem;">
                 <label>Correos de proveedores habituales (opcional, separados por comas)</label>
-                <input type="text" id="mail-remitentes" placeholder="Ej. facturacion@distribuidoranorte.es, recibos@asesoria.es" />
-                <span class="field-hint">Si lo dejas en blanco no pasa nada: el programa revisará igualmente cualquier correo que traiga un PDF con aspecto de factura.</span>
+                <input type="text" id="mail-remitentes" placeholder="Ej. facturacion@distribuidoranorte.es, cofares.es" />
+                <span class="field-hint">Escribe la dirección completa o solo el dominio (cofares.es también acepta pedidos.cofares.es). Si lo dejas en blanco no pasa nada: el programa revisará igualmente cualquier correo que traiga un PDF con aspecto de factura.</span>
               </div>
               <button type="submit" class="btn btn-primary btn-sm">Guardar Cuenta de Correo</button>
             </form>
@@ -661,6 +680,23 @@
               <button class="btn btn-secondary" id="btn-check-updates">Buscar Nuevas Versiones del Programa</button>
             </div>
             <div id="updater-status-box" style="font-size:0.85rem; color:var(--text-muted);"></div>
+
+            <div style="margin-top:1.25rem; padding-top:1rem; border-top:1px solid #e2e8f0;">
+              <h3 style="font-size:0.95rem; margin-bottom:0.4rem;">Carpeta de datos del programa</h3>
+              <p style="font-size:0.84rem; color:var(--text-muted); margin-bottom:0.5rem;">
+                Carpeta actual: <strong id="cfg-carpeta-datos-actual">-</strong>
+              </p>
+              <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+                <input type="text" id="cfg-carpeta-datos-nueva" placeholder="Ej. C:\Users\Farmacia\Documents\Archivero" style="flex:1; min-width:240px;" />
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-change-data-dir">Cambiar carpeta</button>
+              </div>
+              <span class="field-hint">
+                Aquí se guardan la base de datos, sus copias de seguridad y las claves cifradas (no los PDF archivados, que van a la carpeta de facturas de arriba).
+                Elige una carpeta que se incluya en tus copias de seguridad y que no esté dentro de Descargas ni de un archivo ZIP.
+                Tras cambiarla tendrás que cerrar y volver a abrir Archivero.
+              </span>
+              <div id="data-dir-status-box" style="font-size:0.85rem; margin-top:0.4rem;"></div>
+            </div>
           </div>
         </div>
       </section>
@@ -742,7 +778,7 @@
                   <li>Abre en tu navegador <strong>aistudio.google.com/apikey</strong> e inicia sesión con tu cuenta de Google/Gmail.</li>
                   <li>Haz clic en el botón azul <strong>"Create API key"</strong> y copia la clave que empieza por <code>AIza...</code>.</li>
                   <li>Pégala en <strong>Configuración Fácil</strong> y pulsa <strong>Probar Clave</strong> y <strong>Guardar Opciones</strong>.</li>
-                  <li><strong>¿Gratis o de pago?</strong> Sin poner tarjeta es <strong>100% gratis</strong> (hasta 1.500 facturas al día), pero Google puede usar los documentos para entrenar sus modelos. Si activas la facturación en Google AI Studio, pasas al modo privado profesional (tus datos nunca se usan para entrenar) y leer 100 facturas cuesta unos <strong>0,02 €</strong>.</li>
+                  <li><strong>¿Gratis o de pago?</strong> Sin poner tarjeta es <strong>100% gratis</strong> (con un límite diario de lecturas que Google fija y puede cambiar; el modelo Flash-Lite recomendado es el que más permite), pero Google puede usar los documentos para entrenar sus modelos. Si activas la facturación en Google AI Studio, pasas al modo privado profesional (tus datos nunca se usan para entrenar) y leer 100 facturas cuesta unos <strong>0,02 €</strong>.</li>
                 </ol>
               </div>
             </div>

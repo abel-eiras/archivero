@@ -166,11 +166,18 @@ def parse_camt053(
     else:
         xml_text = content
 
-    # Eliminar namespaces para simplificar XPath y ser compatible con cualquier revisión ISO 20022
-    xml_clean = re.sub(r'\sxmlns(?::\w+)?="[^"]+"', "", xml_text)
-    xml_clean = re.sub(r"<(/?)[a-zA-Z0-9]+:", r"<\1", xml_clean)
-
-    root = ET.fromstring(xml_clean)
+    # Parsear respetando los namespaces (comillas simples o dobles, xsi:schemaLocation, prefijos...)
+    # y después quitar el namespace de cada etiqueta para que las rutas funcionen con cualquier
+    # revisión ISO 20022 (camt.053.001.02 / 04 / 08).
+    root = None
+    if isinstance(content, bytes):
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            root = None
+    if root is None:
+        root = ET.fromstring(xml_text.lstrip("\ufeff"))
+    _strip_xml_namespaces(root)
     movimientos: List[Dict[str, Any]] = []
     seen_counter: Dict[str, int] = {}
 
@@ -325,10 +332,10 @@ def parse_csv_or_excel(
         referencia = _safe_cell(r, col_ref) if col_ref is not None else ""
 
         if col_importe is not None and _safe_cell(r, col_importe) != "":
-            importe = _parse_amount_cell(_safe_cell(r, col_importe))
+            importe = _amount_from_row(r, col_importe)
         else:
-            cargo_val = abs(_parse_amount_cell(_safe_cell(r, col_cargo))) if col_cargo is not None else 0.0
-            abono_val = abs(_parse_amount_cell(_safe_cell(r, col_abono))) if col_abono is not None else 0.0
+            cargo_val = abs(_amount_from_row(r, col_cargo)) if col_cargo is not None else 0.0
+            abono_val = abs(_amount_from_row(r, col_abono)) if col_abono is not None else 0.0
             importe = round(abono_val - cargo_val, 2)
 
         sig_key = f"{banco}|{fecha_iso}|{importe:.2f}|{concepto}|{referencia}"
@@ -377,6 +384,13 @@ def _parse_yymmdd(raw: str) -> Optional[str]:
         return dt.date(year, mm, dd).isoformat()
     except ValueError:
         return None
+
+
+def _strip_xml_namespaces(root: ET.Element) -> None:
+    """Elimina el '{namespace}' de las etiquetas para buscar por nombre local."""
+    for el in root.iter():
+        if isinstance(el.tag, str) and "}" in el.tag:
+            el.tag = el.tag.split("}", 1)[1]
 
 
 def _xml_text(element: ET.Element, xpath: str) -> str:
@@ -463,15 +477,57 @@ def _parse_flexible_date(raw: str, preferred_fmt: Optional[str] = None) -> Optio
     return None
 
 
+def _amount_from_row(row: List[Any], index: Optional[int]) -> float:
+    """Lee un importe de una fila: los números nativos de Excel se usan tal cual."""
+    if index is not None and 0 <= index < len(row):
+        val = row[index]
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return round(float(val), 2)
+    return _parse_amount_cell(_safe_cell(row, index))
+
+
 def _parse_amount_cell(raw: str) -> float:
-    s = raw.strip().replace("€", "").replace("EUR", "").replace(" ", "")
+    """
+    Convierte un importe textual a float admitiendo formatos españoles e internacionales:
+    '1.234,56', '1.234' (miles), '1,234.56', '123,45-' (signo final), '(12,00)' (negativo
+    contable), símbolos de moneda y espacios (incluidos los no separables).
+    """
+    s = str(raw or "").strip()
+    for token in ("€", "EUR", "eur", "$", "\u00a0", "\u202f", " ", "+"):
+        s = s.replace(token, "")
     if not s:
         return 0.0
+
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        negative = True
+        s = s[1:-1]
+    if s.endswith("-"):
+        negative = not negative
+        s = s[:-1]
+    if s.startswith("-"):
+        negative = not negative
+        s = s[1:]
+    if not s:
+        return 0.0
+
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "").replace(",", ".")
         else:
             s = s.replace(",", "")
     elif "," in s:
-        s = s.replace(",", ".")
-    return round(float(s), 2)
+        if s.count(",") > 1:
+            s = s.replace(",", "")
+        else:
+            s = s.replace(",", ".")
+    elif "." in s:
+        # Sin coma: un punto seguido de exactamente 3 dígitos es separador de miles ('1.234', '12.345.678')
+        if re.fullmatch(r"\d{1,3}(\.\d{3})+", s):
+            s = s.replace(".", "")
+
+    try:
+        value = float(s)
+    except ValueError as exc:
+        raise ValueError(f"Importe no reconocido: '{raw}'") from exc
+    return round(-value if negative else value, 2)

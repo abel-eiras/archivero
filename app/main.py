@@ -9,11 +9,12 @@ from pathlib import Path
 import socket
 import sys
 import threading
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Iterable, Optional
+from urllib.parse import urlsplit
 import webbrowser
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -67,12 +68,38 @@ TEMPLATES_DIR = APP_DIR / "templates"
 STATIC_DIR = APP_DIR / "static"
 
 
+LOCAL_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _host_header_hostname(host_header: str) -> str:
+    """'127.0.0.1:8000' -> '127.0.0.1'; '[::1]:8000' -> '::1'."""
+    try:
+        return (urlsplit(f"//{host_header.strip()}").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _is_local_origin(value: str, allowed: Iterable[str]) -> bool:
+    try:
+        parts = urlsplit(value.strip())
+        return parts.scheme in ("http", "https") and (parts.hostname or "").lower() in allowed
+    except ValueError:
+        return False
+
+
 def create_app(
     db_path: Optional[Path] = None,
     backup_dir: Optional[Path] = None,
     start_background_poller: bool = True,
+    allowed_hosts: Optional[Iterable[str]] = None,
 ) -> FastAPI:
     """Factoría de la aplicación FastAPI (permite inyectar rutas de test aisladas)."""
+    # ARCHIVERO_ALLOWED_HOSTS (separados por comas) permite añadir nombres extra, p. ej. en Docker en red local.
+    extra_hosts = [h.strip() for h in os.environ.get("ARCHIVERO_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    allowed = frozenset(
+        h.lower().strip("[]") for h in list(allowed_hosts or LOCAL_HOSTNAMES) + extra_hosts
+    )
     db = Database(db_path=db_path or DEFAULT_DB_PATH, backup_dir=backup_dir or DEFAULT_BACKUP_DIR)
     credentials = CredentialManager(vault_dir=(db_path.parent if db_path else None))
     mail_poller = MailPollerService(db=db, credentials=credentials)
@@ -97,6 +124,30 @@ def create_app(
     app.state.db = db
     app.state.credentials = credentials
     app.state.mail_poller = mail_poller
+
+    @app.middleware("http")
+    async def local_only_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """
+        Protección del servidor local frente a DNS rebinding y CSRF:
+        - La cabecera Host debe ser 127.0.0.1, localhost o [::1] (cualquier puerto).
+        - En peticiones que modifican datos, Origin (o en su defecto Referer) debe ser local.
+        """
+        host_name = _host_header_hostname(request.headers.get("host", ""))
+        if host_name not in allowed:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Acceso denegado: Archivero solo acepta conexiones desde este mismo ordenador."},
+            )
+        if request.method.upper() not in _SAFE_METHODS:
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            source = origin if origin is not None else referer
+            if source is not None and not _is_local_origin(source, allowed):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Acceso denegado: la petición no procede de la propia aplicación Archivero."},
+                )
+        return await call_next(request)
 
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
